@@ -96,7 +96,7 @@ function testAskPromptSupportsMetadataCitationMode() {
   assert.doesNotMatch(prompt, /Final line: "Citations: <comma-separated SOURCE ids>"/);
 }
 
-function testAskPromptOmitsLengthInstructionForAuto() {
+function testAskPromptUsesAdaptiveLengthInstructionForAuto() {
   const prompt = __testHooks.buildPrompt("What does SupaVector store?", [
     {
       chunk_id: "default::cli-smoke::welcome#0",
@@ -105,7 +105,8 @@ function testAskPromptOmitsLengthInstructionForAuto() {
   ], "auto");
 
   assert.equal(typeof prompt, "string");
-  assert.doesNotMatch(prompt, /Target length:/);
+  assert.match(prompt, /Target length: adaptive\./);
+  assert.match(prompt, /prefer completeness over brevity when the sources support it/i);
 }
 
 function testBooleanAskPromptRemainsSingleStringPrompt() {
@@ -122,7 +123,8 @@ function testBooleanAskPromptRemainsSingleStringPrompt() {
 }
 
 function testAnswerLengthInstructionsAndTokenBudgets() {
-  assert.equal(__testHooks.buildAnswerLengthInstruction("auto"), "");
+  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /Target length: adaptive\./);
+  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /Be brief for simple factual questions/i);
   assert.match(__testHooks.buildAnswerLengthInstruction("medium"), /roughly 220-450 words/);
   assert.match(__testHooks.buildAnswerLengthInstruction("long"), /roughly 450-900 words/);
   assert.equal(__testHooks.resolveAnswerMaxTokens("auto"), 6144);
@@ -301,7 +303,7 @@ async function testGenerateBooleanAskReturnsInvalidOnProviderFailure() {
   assert.equal(result.selectedChunks?.length, 1);
 }
 
-async function testGenerateAnswerPreservesAutoLengthWithoutPromptSteering() {
+async function testGenerateAnswerUsesAdaptivePromptSteeringForAuto() {
   let capturedInput = "";
   const result = await generateAnswer("What does SupaVector store?", [
     {
@@ -322,7 +324,8 @@ async function testGenerateAnswerPreservesAutoLengthWithoutPromptSteering() {
   });
 
   assert.equal(result.answerLength, "auto");
-  assert.doesNotMatch(capturedInput, /Target length:/);
+  assert.match(capturedInput, /Target length: adaptive\./);
+  assert.match(capturedInput, /prefer completeness over brevity/i);
 }
 
 async function main() {
@@ -333,7 +336,7 @@ async function main() {
   testCodeTaskNormalization();
   testAskPromptRemainsSingleStringPrompt();
   testAskPromptSupportsMetadataCitationMode();
-  testAskPromptOmitsLengthInstructionForAuto();
+  testAskPromptUsesAdaptiveLengthInstructionForAuto();
   testBooleanAskPromptRemainsSingleStringPrompt();
   testAnswerLengthInstructionsAndTokenBudgets();
   testFallbackSummaryIsNotCanonicalUnknownWhenChunksHaveText();
@@ -345,7 +348,7 @@ async function main() {
   await testGenerateAnswerReturnsGenerationUnavailableOnBlankModelOutput();
   await testGenerateCodeAnswerReturnsGenerationUnavailableOnProviderFailure();
   await testGenerateBooleanAskReturnsInvalidOnProviderFailure();
-  await testGenerateAnswerPreservesAutoLengthWithoutPromptSteering();
+  await testGenerateAnswerUsesAdaptivePromptSteeringForAuto();
   console.log("answer guard tests passed");
 }
 
