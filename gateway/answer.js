@@ -75,7 +75,12 @@ function normalizeCitationResponseMode(value, fallback = "inline") {
 
 function buildAnswerLengthInstruction(answerLength) {
   if (answerLength === "auto") {
-    return "";
+    return [
+      "Target length: adaptive.",
+      "Choose the length that best answers the question from the evidence.",
+      "Be brief for simple factual questions, but when the question is explanatory, comparative, diagnostic, or procedural, answer with enough depth to be complete rather than terse.",
+      "Do not pad with filler; prefer completeness over brevity when the sources support it."
+    ].join(" ");
   }
   if (answerLength === "short") {
     return "Target length: short (about 2-4 sentences, roughly 60-120 words).";
