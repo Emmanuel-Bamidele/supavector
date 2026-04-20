@@ -3,7 +3,7 @@
   "info": {
     "title": "SupaVector API",
     "version": "1.0.0",
-    "description": "SupaVector provides hybrid retrieval, RAG answers, and long-term memory APIs for multi-tenant agents. Recommended integration model: bootstrap once, store a service token, and let your backend or runtime agent call SupaVector directly. Use JWTs mainly for human admin sessions. If you want SupaVector to keep its own Postgres/auth runtime but use your own provider key for a request, send the matching request-scoped header on supported sync routes: X-OpenAI-API-Key, X-Gemini-API-Key, or X-Anthropic-API-Key. Those overrides are request-scoped and are rejected by asynchronous memory reflect/compact flows. All /v1 endpoints return a standard response envelope: { ok, data|error, meta }. For idempotent write endpoints, send a unique Idempotency-Key per logical request."
+    "description": "SupaVector provides hybrid retrieval, grounded answers, and long-term memory APIs for multi-tenant agents. Recommended integration model: bootstrap once, store a service token, and let your backend or runtime agent call SupaVector directly. Use JWTs mainly for human admin sessions. If you want SupaVector to keep its own Postgres/auth runtime but use your own provider key for a request, send the matching request-scoped header on supported sync routes: X-OpenAI-API-Key, X-Gemini-API-Key, or X-Anthropic-API-Key. Those overrides are request-scoped and are rejected by asynchronous memory reflect/compact flows. All /v1 endpoints return a standard response envelope: { ok, data|error, meta }. For idempotent write endpoints, send a unique Idempotency-Key per logical request."
   },
   "servers": [
     {
@@ -3098,7 +3098,7 @@
         "tags": [
           "Ask"
         ],
-        "summary": "RAG question answering",
+        "summary": "Grounded question answering",
         "requestBody": {
           "required": true,
           "content": {

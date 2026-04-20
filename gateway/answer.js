@@ -6,7 +6,7 @@
 //
 
 // answer.js
-// This file generates grounded answers using retrieved chunks (RAG).
+// This file generates grounded answers using retrieved chunks.
 
 const {
   DEFAULT_ANSWER_PROVIDER,
