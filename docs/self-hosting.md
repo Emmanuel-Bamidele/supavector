@@ -16,6 +16,8 @@ Current public scope is:
 
 This guide does not assume Kubernetes, managed control planes, or automatic multi-instance provisioning.
 
+If you are running the private `supavector-portal` plugin, treat that as a different deployment path from plain OSS self-hosting. The stock `Dockerfile.node` image does not copy `supavector-portal/plugins`, so enterprise SSO, runtime placement, BYOC, sharding, Access Management, and portal billing surfaces will not exist unless you add the portal overlay.
+
 If you already have your own Postgres and do not want to run the bundled database container, use:
 
 - [`bring-your-own-postgres.md`](bring-your-own-postgres.md)
@@ -28,13 +30,19 @@ If you already have your own Postgres and do not want to run the bundled databas
 SupaVector has three core runtime pieces:
 
 - `gateway/`
-  Node.js API layer, auth, docs UI, jobs, and RAG orchestration
+  Node.js API layer, auth, docs UI, jobs, and grounded answer orchestration
 - `supavector/`
   the vector store used for embedding storage and retrieval
 - Postgres
   persistent state for users, tenants, tokens, jobs, chunks, and memory metadata
 
 In local Compose, the repo starts all of these for you.
+
+When you need the private portal plugin, use the overlay file from this repo:
+
+- [`../docker-compose.portal.yml`](../docker-compose.portal.yml)
+
+That overlay changes the gateway build to the private `supavector-portal/Dockerfile.node.portal` image and passes through the portal runtime env required for enterprise and BYOC features.
 
 The bundled Postgres path and the external-Postgres path are both still self-hosted SupaVector deployments. That choice only changes which database this SupaVector instance uses.
 
@@ -164,6 +172,14 @@ Useful optional values:
 docker compose up -d --build
 ```
 
+If you are running the private portal plugin and expect enterprise SSO, runtime placement, BYOC, sharding, or portal admin surfaces, use:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --build
+```
+
+This requires the `supavector-portal` repo to be cloned beside this repo under the same parent directory.
+
 Check health:
 
 ```bash
@@ -181,6 +197,15 @@ If you want the external-Postgres path instead, do not use the stock Compose fil
 ```bash
 cp .env.external-postgres.example .env.external-postgres
 docker compose -f docker-compose.external-postgres.yml --env-file .env.external-postgres up -d --build
+```
+
+If you are using the private portal plugin on the external-Postgres path, add the portal overlay:
+
+```bash
+docker compose \
+  -f docker-compose.external-postgres.yml \
+  -f docker-compose.portal.yml \
+  --env-file .env.external-postgres up -d --build
 ```
 
 ### 4. Bootstrap The First Admin And Service Token

@@ -1,0 +1,82 @@
+# docker-compose.portal.yml
+# Portal / enterprise / BYOC overlay for the public SupaVector stack.
+#
+# Use this ONLY when the private `supavector-portal` repo is cloned beside this
+# repo under the same parent directory:
+#
+#   ../supavector
+#   ../supavector-portal
+#
+# Example local startup:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.portal.yml \
+#     --env-file .env up -d --build
+#
+# Example external Postgres startup:
+#
+#   docker compose \
+#     -f docker-compose.external-postgres.yml \
+#     -f docker-compose.portal.yml \
+#     --env-file .env.external-postgres up -d --build
+#
+# Example production startup:
+#
+#   docker compose \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.portal.yml \
+#     --env-file .env up -d --build
+#
+# This overlay switches the gateway image from the public `Dockerfile.node`
+# build to the private `supavector-portal/Dockerfile.node.portal` build so the
+# portal plugin, enterprise SSO, runtime placement, BYOC, and sharding surfaces
+# are actually present in the running container.
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: supavector-portal/Dockerfile.node.portal
+      args:
+        REPO_DIR: supavector
+    environment:
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:3000}
+      PORTAL_EXIT_ON_MIGRATION_FAILURE: ${PORTAL_EXIT_ON_MIGRATION_FAILURE:-1}
+      PORTAL_RUNTIME_HEARTBEAT_STALE_MS: ${PORTAL_RUNTIME_HEARTBEAT_STALE_MS:-900000}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      CONNECT_GOOGLE_CLIENT_ID: ${CONNECT_GOOGLE_CLIENT_ID:-}
+      CONNECT_GOOGLE_CLIENT_SECRET: ${CONNECT_GOOGLE_CLIENT_SECRET:-}
+      CONNECT_GITHUB_CLIENT_ID: ${CONNECT_GITHUB_CLIENT_ID:-}
+      CONNECT_GITHUB_CLIENT_SECRET: ${CONNECT_GITHUB_CLIENT_SECRET:-}
+      CONNECT_MICROSOFT_CLIENT_ID: ${CONNECT_MICROSOFT_CLIENT_ID:-}
+      CONNECT_MICROSOFT_CLIENT_SECRET: ${CONNECT_MICROSOFT_CLIENT_SECRET:-}
+      CONNECT_MICROSOFT_TENANT_ID: ${CONNECT_MICROSOFT_TENANT_ID:-}
+      CONNECT_SLACK_CLIENT_ID: ${CONNECT_SLACK_CLIENT_ID:-}
+      CONNECT_SLACK_CLIENT_SECRET: ${CONNECT_SLACK_CLIENT_SECRET:-}
+      CONNECT_NOTION_CLIENT_ID: ${CONNECT_NOTION_CLIENT_ID:-}
+      CONNECT_NOTION_CLIENT_SECRET: ${CONNECT_NOTION_CLIENT_SECRET:-}
+      CONNECT_NOTION_VERSION: ${CONNECT_NOTION_VERSION:-}
+      CONNECT_WHATSAPP_GRAPH_BASE_URL: ${CONNECT_WHATSAPP_GRAPH_BASE_URL:-}
+      CONNECT_WHATSAPP_GRAPH_VERSION: ${CONNECT_WHATSAPP_GRAPH_VERSION:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      MAIL_DEFAULT_SENDER: ${MAIL_DEFAULT_SENDER:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLIC_KEY: ${STRIPE_PUBLIC_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_HOSTED_BUILDER_MONTH: ${STRIPE_PRICE_HOSTED_BUILDER_MONTH:-}
+      STRIPE_PRICE_HOSTED_BUILDER_YEAR: ${STRIPE_PRICE_HOSTED_BUILDER_YEAR:-}
+      STRIPE_PRICE_HOSTED_PRO_MONTH: ${STRIPE_PRICE_HOSTED_PRO_MONTH:-}
+      STRIPE_PRICE_HOSTED_PRO_YEAR: ${STRIPE_PRICE_HOSTED_PRO_YEAR:-}
+      STRIPE_PRICE_HOSTED_BRAND_MONTH: ${STRIPE_PRICE_HOSTED_BRAND_MONTH:-}
+      STRIPE_PRICE_HOSTED_BRAND_YEAR: ${STRIPE_PRICE_HOSTED_BRAND_YEAR:-}
+      PUBLIC_CUSTOM_DOMAIN_PLATFORM_HOST: ${PUBLIC_CUSTOM_DOMAIN_PLATFORM_HOST:-}
+      PUBLIC_CUSTOM_DOMAIN_PROXY_TARGET: ${PUBLIC_CUSTOM_DOMAIN_PROXY_TARGET:-http://127.0.0.1:3300}
+      PUBLIC_CUSTOM_DOMAIN_RESERVED_HOSTS: ${PUBLIC_CUSTOM_DOMAIN_RESERVED_HOSTS:-}
+      BILLING_PRICE_PER_1K_AI_TOKENS: ${BILLING_PRICE_PER_1K_AI_TOKENS:-}
+      BILLING_PRICE_PER_GB_STORAGE: ${BILLING_PRICE_PER_GB_STORAGE:-}
+      PORTAL_STORAGE_BILLING_PAYMENT_METHOD_GRACE_HOURS: ${PORTAL_STORAGE_BILLING_PAYMENT_METHOD_GRACE_HOURS:-168}
+      PORTAL_STORAGE_BILLING_PAST_DUE_GRACE_HOURS: ${PORTAL_STORAGE_BILLING_PAST_DUE_GRACE_HOURS:-72}

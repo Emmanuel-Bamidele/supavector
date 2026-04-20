@@ -34,11 +34,12 @@ Read next:
 - `docker-compose.yml`: local/self-hosted stack.
 - `docker-compose.external-postgres.yml`: self-hosted stack that uses your existing Postgres.
 - `docker-compose.prod.yml`: production-oriented stack with proxy/TLS wiring.
+- `docker-compose.portal.yml`: portal/enterprise overlay that swaps the gateway build to the private portal image when `supavector-portal` is cloned beside this repo.
 
 ## Architecture
 
 - C++ vector core for fast vector operations.
-- Node gateway for auth, API routing, RAG answer generation, memory workflows, and docs.
+- Node gateway for auth, API routing, grounded answer generation, memory workflows, and docs.
 - Postgres for persistent metadata, auth records, jobs, tenant settings, and memory state.
 - Optional provider-backed embeddings and answer generation with fallbacks when unavailable. OpenAI remains the default. Gemini is also supported for generation and embeddings, and Anthropic is supported for generation.
 
@@ -64,6 +65,8 @@ If you are not sure which path to use, choose based on the kind of deployment an
 | Use SupaVector mainly as a human admin or browser UI | You are managing tenant settings, keys, or interactive sessions | [Human JWT](docs/agents.md#human-jwt) |
 
 If you are still deciding what you are actually setting up, start with [Setup Modes](docs/setup-modes.md) before choosing a self-hosted or shared-deployment path.
+
+If you are deploying the private portal plugin and expect enterprise SSO, runtime placement, BYOC, sharding, Access Management, or portal billing surfaces, do not start from the plain `Dockerfile.node` path alone. Use the portal overlay described in [docs/self-hosting.md](docs/self-hosting.md) so the gateway image includes `supavector-portal/plugins`.
 
 ## Quickstart
 
