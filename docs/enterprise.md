@@ -49,7 +49,13 @@ Current enterprise auth scope includes:
 - tenant user-management APIs and browser admin UI
 - local break-glass users for password login when you want an emergency admin path
 
-Current scope does not include SCIM or external provisioning APIs. The supported enterprise pattern today is SSO plus just-in-time provisioning.
+Open-source gateway without the private portal overlay does not include tenant SCIM or runtime-placement surfaces.
+
+When you run the private portal overlay:
+
+- tenant SCIM is available, but the current runtime path supports bearer-token auth only
+- SAML is not active in the current portal runtime path, so use OIDC for tenant SSO
+- hosted-dedicated and customer-cloud runtimes must register and heartbeat into the portal control plane before they can be used for tenant placement
 
 ## Roles And Tenant Operations
 
@@ -533,6 +539,8 @@ Before calling an enterprise rollout complete, verify:
 - role mappings match real IdP claims
 - allowed-domain rules are intentional
 - at least one break-glass local admin exists
+- if using hosted-dedicated or customer-cloud placement, the target runtime is registered and sending fresh heartbeats with `PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>`
+- if using hosted-dedicated or customer-cloud placement, the validated portal cutover flow was completed; registration and heartbeat alone do not switch tenant placement
 - runtime service tokens are stored outside source control
 - hosted tenants have billing and payment method setup completed if they will store data on SupaVector-hosted infrastructure
 
@@ -548,6 +556,8 @@ Common enterprise rollout failures:
   Check tenant auth mode, provider allowlist, and tenant-scoped or instance-scoped OIDC config.
 - SSO login redirects incorrectly:
   Check `PUBLIC_BASE_URL` and the IdP redirect URI.
+- Dedicated or customer-cloud runtime never becomes eligible for cutover:
+  Check the runtime registration and heartbeat calls, the bearer token pattern `PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>`, the runtime key and shard key values, and remember that placement changes only after validated portal cutover.
 - Hosted writes fail with storage-billing errors:
   Add or update the payment method in the Billing Portal and pay outstanding hosted storage invoices.
 - Bootstrap secrets were lost:
