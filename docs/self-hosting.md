@@ -44,6 +44,24 @@ When you need the private portal plugin, use the overlay file from this repo:
 
 That overlay changes the gateway build to the private `supavector-portal/Dockerfile.node.portal` image and passes through the portal runtime env required for enterprise and BYOC features.
 
+If you are using that overlay for `hosted_dedicated` or `customer_cloud` runtime placement, the target runtime also needs to register with the portal control plane and keep a fresh heartbeat.
+
+Portal runtime control-plane contract:
+
+- store a per-runtime bearer token in env as `PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>`
+- send `Authorization: Bearer <PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>>` on portal runtime control-plane requests
+- call `POST /portal/runtime/control-plane/register` with the runtime key, shard key, environment type, region, and any published base URLs
+- call `POST /portal/runtime/control-plane/heartbeat` with the runtime status, health status, version, and any operator metadata you want surfaced in Runtime foundation
+- send heartbeats every 60 to 120 seconds
+- heartbeat freshness is evaluated against `PORTAL_RUNTIME_HEARTBEAT_STALE_MS`
+
+Important:
+
+- registration and heartbeat only make the runtime visible and eligible for validation
+- tenant placement does not switch automatically
+- cutover still happens from the portal admin runtime-move flow after validation passes
+- `hosted_shared` placement does not require per-runtime registration or heartbeat work from you
+
 The bundled Postgres path and the external-Postgres path are both still self-hosted SupaVector deployments. That choice only changes which database this SupaVector instance uses.
 
 On self-hosted deployments, the gateway **Settings** page remains the main interactive admin surface. That is where you can manage browser auth, issue service tokens, configure tenant auth and SSO, and handle tenant users unless you choose to automate those flows through the admin APIs or CLI instead.

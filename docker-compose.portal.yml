@@ -32,6 +32,11 @@
 # build to the private `supavector-portal/Dockerfile.node.portal` build so the
 # portal plugin, enterprise SSO, runtime placement, BYOC, and sharding surfaces
 # are actually present in the running container.
+#
+# If you operate hosted-dedicated or customer-cloud runtimes against this portal,
+# also define runtime-specific control-plane tokens in your env, for example:
+#
+#   PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_ACME_RUNTIME=replace_with_control_plane_token
 
 services:
   gateway:
