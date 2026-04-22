@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "npm run test:unit",
-    "test:unit": "node tests/compute_value_score.test.js && node tests/lifecycle_min_age.test.js && node tests/chunking_strategy.test.js && node tests/answer_guard.test.js && node tests/search_preview.test.js && node tests/hybrid_retrieval.test.js && node tests/retrieval_correctness.test.js && node tests/code_answer_quality.test.js && node tests/model_config.test.js && node tests/conversation_wiki.test.js && node tests/reindex_guard.test.js && node tests/billing_usage.test.js && node tests/storage_billing_periods.test.js && node tests/enterprise_auth.test.js && node tests/enterprise_control_plane.test.js",
+    "test:unit": "GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/compute_value_score.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/lifecycle_min_age.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/chunking_strategy.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/answer_guard.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/search_preview.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/hybrid_retrieval.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/retrieval_correctness.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/code_answer_quality.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/model_config.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/conversation_wiki.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/reindex_guard.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/billing_usage.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/storage_billing_periods.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/docs_url_fetch.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/enterprise_auth.test.js && GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN=1 node tests/enterprise_control_plane.test.js",
     "test:integration": "node tests/mcp_public_endpoints.test.js",
     "test:e2e": "node tests/api_e2e.test.js",
     "test:e2e:code": "node tests/code_api_e2e.test.js",
@@ -21,6 +21,7 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "@node-saml/node-saml": "^5.1.0",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
     "express": "^5.2.1",

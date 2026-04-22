@@ -235,6 +235,7 @@ const PUBLIC_REGISTRATION_ENABLED = parseEnvFlag(
   DEPLOYMENT_MODE === "hosted"
 );
 let portalPluginMounted = false;
+let portalPluginReady = null;
 
 const JSON_BODY_LIMIT = String(process.env.JSON_BODY_LIMIT || "64mb").trim() || "64mb";
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
@@ -330,14 +331,22 @@ app.use((req, res, next) => {
 // ── Optional private portal plugin ───────────────────────────────────────────
 // Not part of the open-source distribution. Place the private plugin in
 // gateway/plugins/ (directory is git-ignored). The app runs normally without it.
-try {
-  const portalPlugin = require("./plugins");
-  portalPlugin.mount(app, { renderPublicUiTemplate });
-  portalPluginMounted = true;
-  console.log("[plugins] portal: mounted");
-} catch (e) {
-  if (e.code !== "MODULE_NOT_FOUND") throw e;
-  // gateway/plugins/ not present — running as open-source build, no portal features
+const skipPrivatePortalPlugin = ["1", "true", "yes", "on"].includes(
+  String(process.env.GATEWAY_SKIP_PRIVATE_PORTAL_PLUGIN || "").trim().toLowerCase()
+);
+if (!skipPrivatePortalPlugin) {
+  try {
+    const portalPlugin = require("./plugins");
+    portalPlugin.mount(app, { renderPublicUiTemplate });
+    portalPluginMounted = true;
+    if (typeof portalPlugin.ready === "function") {
+      portalPluginReady = portalPlugin.ready;
+    }
+    console.log("[plugins] portal: mounted");
+  } catch (e) {
+    if (e.code !== "MODULE_NOT_FOUND") throw e;
+    // gateway/plugins/ not present — running as open-source build, no portal features
+  }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5182,7 +5191,25 @@ async function readResponseTextWithCap(response, capChars) {
   return { raw, truncated };
 }
 
-async function fetchUrlText(rawUrl) {
+function normalizeUrlFetchValidators(validators = null) {
+  if (!validators || typeof validators !== "object" || Array.isArray(validators)) {
+    return null;
+  }
+  const etag = String(validators.etag || "").trim();
+  const lastModified = String(
+    validators.lastModified
+    ?? validators.last_modified
+    ?? ""
+  ).trim();
+  if (!etag && !lastModified) return null;
+  return {
+    ...(etag ? { etag } : {}),
+    ...(lastModified ? { lastModified } : {})
+  };
+}
+
+async function fetchUrlText(rawUrl, options = {}) {
+  const deps = options.deps && typeof options.deps === "object" ? options.deps : {};
   let url;
   try {
     url = new URL(String(rawUrl || ""));
@@ -5202,6 +5229,13 @@ async function fetchUrlText(rawUrl) {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.8"
   };
+  const validators = normalizeUrlFetchValidators(options.validators);
+  if (validators?.etag) headers["If-None-Match"] = validators.etag;
+  if (validators?.lastModified) headers["If-Modified-Since"] = validators.lastModified;
+  const fetchImpl = deps.fetchWithTimeout || fetchWithTimeout;
+  const assertPublicDnsHostImpl = deps.assertPublicDnsHost || assertPublicDnsHost;
+  const readResponseTextWithCapImpl = deps.readResponseTextWithCap || readResponseTextWithCap;
+  const extractTextFromHtmlImpl = deps.extractTextFromHtml || extractTextFromHtml;
   const safeTimeout = Number.isFinite(FETCH_TIMEOUT_MS) && FETCH_TIMEOUT_MS > 0 ? FETCH_TIMEOUT_MS : 15000;
   const safeMaxRedirects = Number.isFinite(MAX_FETCH_REDIRECTS) && MAX_FETCH_REDIRECTS >= 0
     ? MAX_FETCH_REDIRECTS
@@ -5215,9 +5249,9 @@ async function fetchUrlText(rawUrl) {
     if (isPrivateHostname(current.hostname)) {
       throw new Error("URL host is blocked for safety.");
     }
-    await assertPublicDnsHost(current.hostname);
+    await assertPublicDnsHostImpl(current.hostname);
 
-    const res = await fetchWithTimeout(current.toString(), {
+    const res = await fetchImpl(current.toString(), {
       redirect: "manual",
       headers
     }, safeTimeout);
@@ -5234,16 +5268,27 @@ async function fetchUrlText(rawUrl) {
       continue;
     }
 
+    if (res.status === 304) {
+      return {
+        notModified: true,
+        finalUrl: current.toString(),
+        contentType: null,
+        truncated: false,
+        etag: res.headers.get("etag") || validators?.etag || null,
+        lastModified: res.headers.get("last-modified") || validators?.lastModified || null
+      };
+    }
+
     if (!res.ok) {
       throw new Error(`Fetch failed with ${res.status} ${res.statusText}`);
     }
 
     const contentType = res.headers.get("content-type") || "";
-    const { raw, truncated } = await readResponseTextWithCap(res, MAX_FETCH_CHARS);
+    const { raw, truncated } = await readResponseTextWithCapImpl(res, MAX_FETCH_CHARS);
 
     let text;
     if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {
-      text = extractTextFromHtml(raw);
+      text = extractTextFromHtmlImpl(raw);
     } else if (contentType.startsWith("text/") || contentType.includes("application/json") || contentType.includes("application/xml")) {
       text = raw;
     } else {
@@ -5255,7 +5300,15 @@ async function fetchUrlText(rawUrl) {
       throw new Error("No extractable text found at URL.");
     }
 
-    return { text, contentType, truncated };
+    return {
+      text,
+      contentType,
+      truncated,
+      finalUrl: current.toString(),
+      etag: res.headers.get("etag") || null,
+      lastModified: res.headers.get("last-modified") || null,
+      notModified: false
+    };
   }
 
   throw new Error("Too many redirects.");
@@ -12469,6 +12522,7 @@ app.post("/docs/url", requireJwt, requireRole("indexer"), async (req, res) => {
   const { docId, url } = req.body || {};
   const cleanDocId = String(docId || "").trim();
   const cleanUrl = String(url || "").trim();
+  const validators = normalizeUrlFetchValidators(req.body?.validators);
 
   if (!cleanDocId || !cleanUrl) {
     return res.status(400).json({ error: "docId and url required" });
@@ -12486,7 +12540,24 @@ app.post("/docs/url", requireJwt, requireRole("indexer"), async (req, res) => {
     const agentId = normalizeAgentId(req.body?.agentId ?? req.body?.agent_id);
     const tags = parseTagsInput(req.body?.tags);
     const expiresAt = resolveExpiresAt(req.body);
-    const fetched = await fetchUrlText(cleanUrl);
+    const fetched = await fetchUrlText(cleanUrl, { validators });
+    if (fetched.notModified) {
+      return res.json({
+        ok: true,
+        docId: cleanDocId,
+        collection,
+        tenantId,
+        url: cleanUrl,
+        finalUrl: fetched.finalUrl || cleanUrl,
+        notModified: true,
+        etag: fetched.etag || null,
+        lastModified: fetched.lastModified || null,
+        extractedChars: 0,
+        fetchTruncated: false,
+        docTruncated: false,
+        chunksIndexed: 0
+      });
+    }
     const { chunksIndexed, truncated } = await indexDocument(
       tenantId,
       collection,
@@ -12507,7 +12578,11 @@ app.post("/docs/url", requireJwt, requireRole("indexer"), async (req, res) => {
       collection,
       tenantId,
       url: cleanUrl,
+      finalUrl: fetched.finalUrl || cleanUrl,
+      notModified: false,
       contentType: fetched.contentType || null,
+      etag: fetched.etag || null,
+      lastModified: fetched.lastModified || null,
       extractedChars: fetched.text.length,
       fetchTruncated: fetched.truncated,
       docTruncated: truncated,
@@ -12522,6 +12597,7 @@ app.post("/v1/docs/url", requireJwt, requireRole("indexer"), async (req, res) =>
   const { docId, url } = req.body || {};
   const cleanDocId = String(docId || "").trim();
   const cleanUrl = String(url || "").trim();
+  const validators = normalizeUrlFetchValidators(req.body?.validators);
 
   if (!cleanDocId || !cleanUrl) {
     return res.status(400).json(buildErrorPayload("docId and url required", "INVALID_INPUT", null, null));
@@ -12559,7 +12635,24 @@ app.post("/v1/docs/url", requireJwt, requireRole("indexer"), async (req, res) =>
     handler: async () => {
       try {
         const expiresAt = resolveExpiresAt(req.body);
-        const fetched = await fetchUrlText(cleanUrl);
+        const fetched = await fetchUrlText(cleanUrl, { validators });
+        if (fetched.notModified) {
+          return {
+            status: 200,
+            payload: buildOkPayload({
+              docId: cleanDocId,
+              url: cleanUrl,
+              finalUrl: fetched.finalUrl || cleanUrl,
+              notModified: true,
+              etag: fetched.etag || null,
+              lastModified: fetched.lastModified || null,
+              extractedChars: 0,
+              fetchTruncated: false,
+              docTruncated: false,
+              chunksIndexed: 0
+            }, tenantId, collection)
+          };
+        }
         const { chunksIndexed, truncated } = await indexDocument(
           tenantId,
           collection,
@@ -12579,7 +12672,11 @@ app.post("/v1/docs/url", requireJwt, requireRole("indexer"), async (req, res) =>
           payload: buildOkPayload({
             docId: cleanDocId,
             url: cleanUrl,
+            finalUrl: fetched.finalUrl || cleanUrl,
+            notModified: false,
             contentType: fetched.contentType || null,
+            etag: fetched.etag || null,
+            lastModified: fetched.lastModified || null,
             extractedChars: fetched.text.length,
             fetchTruncated: fetched.truncated,
             docTruncated: truncated,
@@ -14504,6 +14601,9 @@ app.get("/v1/jobs/:id", requireJwt, requireRole("reader"), async (req, res) => {
 async function start() {
   try {
     await runMigrations();
+    if (typeof portalPluginReady === "function") {
+      await portalPluginReady();
+    }
     app.listen(3000, () => {
       console.log("HTTP gateway listening on http://localhost:3000");
       if (isTelemetryEnabled()) {
@@ -14548,6 +14648,8 @@ module.exports = {
     buildPublicRegistrationTenantId,
     buildPublicRegistrationInstructions,
     parseDocumentSourceInput,
+    normalizeUrlFetchValidators,
+    fetchUrlText,
     buildCodeRetrievalQuery,
     normalizeCodeSessionContext,
     buildCodeSessionFocus,

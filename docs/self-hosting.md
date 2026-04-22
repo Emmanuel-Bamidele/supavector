@@ -42,13 +42,13 @@ When you need the private portal plugin, use the overlay file from this repo:
 
 - [`../docker-compose.portal.yml`](../docker-compose.portal.yml)
 
-That overlay changes the gateway build to the private `supavector-portal/Dockerfile.node.portal` image and passes through the portal runtime env required for enterprise and BYOC features.
+That overlay changes the gateway build to the private `supavector-portal/Dockerfile.node.portal` image and loads gateway env from `${SUPAVECTOR_PORTAL_ENV_FILE:-.env}` so portal runtime settings and runtime control-plane tokens actually reach the container.
 
 If you are using that overlay for `hosted_dedicated` or `customer_cloud` runtime placement, the target runtime also needs to register with the portal control plane and keep a fresh heartbeat.
 
 Portal runtime control-plane contract:
 
-- store a per-runtime bearer token in env as `PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>`
+- store a per-runtime bearer token in the env file used by the overlay as `PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>`
 - send `Authorization: Bearer <PORTAL_RUNTIME_CONTROL_PLANE_TOKEN_<RUNTIME>>` on portal runtime control-plane requests
 - call `POST /portal/runtime/control-plane/register` with the runtime key, shard key, environment type, region, and any published base URLs
 - call `POST /portal/runtime/control-plane/heartbeat` with the runtime status, health status, version, and any operator metadata you want surfaced in Runtime foundation
@@ -194,6 +194,13 @@ If you are running the private portal plugin and expect enterprise SSO, runtime 
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --build
+```
+
+If you keep portal-only settings or runtime control-plane tokens in a separate env file, point the overlay at it:
+
+```bash
+SUPAVECTOR_PORTAL_ENV_FILE=.env.portal \
+docker compose -f docker-compose.yml -f docker-compose.portal.yml --env-file .env.portal up -d --build
 ```
 
 This requires the `supavector-portal` repo to be cloned beside this repo under the same parent directory.
