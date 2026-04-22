@@ -40,6 +40,8 @@
 
 services:
   gateway:
+    env_file:
+      - ${SUPAVECTOR_PORTAL_ENV_FILE:-.env}
     build:
       context: ..
       dockerfile: supavector-portal/Dockerfile.node.portal

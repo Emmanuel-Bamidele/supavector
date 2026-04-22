@@ -54,7 +54,7 @@ Open-source gateway without the private portal overlay does not include tenant S
 When you run the private portal overlay:
 
 - tenant SCIM is available, but the current runtime path supports bearer-token auth only
-- SAML is not active in the current portal runtime path, so use OIDC for tenant SSO
+- tenant SAML sign-in can be configured and validated in the portal, and live tenant sign-in availability follows the same readiness signals shown for tenant rollout
 - hosted-dedicated and customer-cloud runtimes must register and heartbeat into the portal control plane before they can be used for tenant placement
 
 ## Roles And Tenant Operations
