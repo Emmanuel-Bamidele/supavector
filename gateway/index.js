@@ -13579,12 +13579,9 @@ app.post(["/memory", "/memory/write"], requireJwt, requireRole("indexer"), memor
 app.post(["/v1/memory", "/v1/memory/write"], requireJwt, requireRole("indexer"), memoryWriteV1);
 
 app.post("/memory/recall", requireJwt, requireRole("reader"), async (req, res) => {
-  const { query, k, types } = req.body || {};
+  const query = String(req.body?.query || "").trim();
+  const { k, types } = req.body || {};
   const limit = parseInt(k || "5", 10);
-
-  if (!query || !String(query).trim()) {
-    return res.status(400).json({ error: "query is required", tenantId: null, collection: null });
-  }
 
   let tenantId = null;
   let collection = null;
@@ -13592,6 +13589,16 @@ app.post("/memory/recall", requireJwt, requireRole("reader"), async (req, res) =
     tenantId = resolveTenantId(req);
     const access = resolveAccessContext(req);
     collection = resolveCollection(req);
+    if (!query) {
+      return res.json({
+        ok: true,
+        query: "",
+        results: [],
+        k: limit,
+        tenantId,
+        collection
+      });
+    }
     const telemetryContext = buildTelemetryContext({
       requestId: req.requestId,
       tenantId,
@@ -13697,12 +13704,9 @@ app.post("/memory/recall", requireJwt, requireRole("reader"), async (req, res) =
 });
 
 app.post("/v1/memory/recall", requireJwt, requireRole("reader"), async (req, res) => {
-  const { query, k, types } = req.body || {};
+  const query = String(req.body?.query || "").trim();
+  const { k, types } = req.body || {};
   const limit = parseInt(k || "5", 10);
-
-  if (!query || !String(query).trim()) {
-    return sendError(res, 400, "query is required", "INVALID_INPUT", null, null);
-  }
 
   let tenantId = null;
   let collection = null;
@@ -13710,6 +13714,13 @@ app.post("/v1/memory/recall", requireJwt, requireRole("reader"), async (req, res
     tenantId = resolveTenantId(req);
     const access = resolveAccessContext(req);
     collection = resolveCollection(req);
+    if (!query) {
+      return sendOk(res, {
+        query: "",
+        results: [],
+        k: limit
+      }, tenantId, collection);
+    }
     const telemetryContext = buildTelemetryContext({
       requestId: req.requestId,
       tenantId,
