@@ -106,7 +106,8 @@ function testAskPromptUsesAdaptiveLengthInstructionForAuto() {
 
   assert.equal(typeof prompt, "string");
   assert.match(prompt, /Target length: adaptive\./);
-  assert.match(prompt, /prefer completeness over brevity when the sources support it/i);
+  assert.match(prompt, /prefer a fuller answer over a terse one/i);
+  assert.match(prompt, /bias toward the longer response/i);
 }
 
 function testBooleanAskPromptRemainsSingleStringPrompt() {
@@ -124,7 +125,9 @@ function testBooleanAskPromptRemainsSingleStringPrompt() {
 
 function testAnswerLengthInstructionsAndTokenBudgets() {
   assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /Target length: adaptive\./);
-  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /Be brief for simple factual questions/i);
+  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /Be concise for simple factual questions/i);
+  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /prefer a fuller answer over a terse one/i);
+  assert.match(__testHooks.buildAnswerLengthInstruction("auto"), /bias toward the longer response/i);
   assert.match(__testHooks.buildAnswerLengthInstruction("medium"), /roughly 220-450 words/);
   assert.match(__testHooks.buildAnswerLengthInstruction("long"), /roughly 450-900 words/);
   assert.equal(__testHooks.resolveAnswerMaxTokens("auto"), 6144);
@@ -325,7 +328,8 @@ async function testGenerateAnswerUsesAdaptivePromptSteeringForAuto() {
 
   assert.equal(result.answerLength, "auto");
   assert.match(capturedInput, /Target length: adaptive\./);
-  assert.match(capturedInput, /prefer completeness over brevity/i);
+  assert.match(capturedInput, /prefer a fuller answer over a terse one/i);
+  assert.match(capturedInput, /bias toward the longer response/i);
 }
 
 async function main() {

@@ -78,8 +78,9 @@ function buildAnswerLengthInstruction(answerLength) {
     return [
       "Target length: adaptive.",
       "Choose the length that best answers the question from the evidence.",
-      "Be brief for simple factual questions, but when the question is explanatory, comparative, diagnostic, or procedural, answer with enough depth to be complete rather than terse.",
-      "Do not pad with filler; prefer completeness over brevity when the sources support it."
+      "Be concise for simple factual questions, but when the question is explanatory, comparative, diagnostic, procedural, or otherwise depth-seeking, prefer a fuller answer over a terse one.",
+      "If a shorter answer would risk leaving out useful explanation, nuance, steps, tradeoffs, or edge cases supported by the sources, bias toward the longer response.",
+      "Do not pad with filler; add detail only when it improves completeness, clarity, or usefulness."
     ].join(" ");
   }
   if (answerLength === "short") {

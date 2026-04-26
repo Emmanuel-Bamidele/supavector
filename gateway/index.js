@@ -13360,16 +13360,22 @@ app.delete("/v1/docs/:docId", requireJwt, requireRole("indexer"), async (req, re
 // - VSEARCH top-k
 // - fetch chunk texts from Postgres for previews
 app.get("/search", requireJwt, requireRole("reader"), async (req, res) => {
-  const q = req.query.q;
+  const q = String(req.query.q || "").trim();
   const k = parseInt(req.query.k || "5", 10);
   const docIds = parseDocFilter(req.query.docIds || req.query.docs);
-
-  if (!q) return res.status(400).json({ error: "q query param required" });
 
   try {
     const tenantId = resolveTenantId(req);
     const access = resolveAccessContext(req);
     const collection = resolveCollectionScope(req, { defaultAll: true });
+    if (!q) {
+      return res.json({
+        query: "",
+        results: [],
+        tenantId,
+        collection
+      });
+    }
     const policy = resolveRequestedMemoryPolicy(req.query);
     const favorRecency = resolveRequestedFavorRecency(req.query);
     const retrievalFilters = parseRetrievalFilterInput(req.query || {});
@@ -13426,11 +13432,9 @@ app.get("/search", requireJwt, requireRole("reader"), async (req, res) => {
 });
 
 app.get("/v1/search", requireJwt, requireRole("reader"), async (req, res) => {
-  const q = req.query.q;
+  const q = String(req.query.q || "").trim();
   const k = parseInt(req.query.k || "5", 10);
   const docIds = parseDocFilter(req.query.docIds || req.query.docs);
-
-  if (!q) return sendError(res, 400, "q query param required", "INVALID_INPUT", null, null);
 
   let tenantId = null;
   let collection = null;
@@ -13438,6 +13442,12 @@ app.get("/v1/search", requireJwt, requireRole("reader"), async (req, res) => {
     tenantId = resolveTenantId(req);
     const access = resolveAccessContext(req);
     collection = resolveCollectionScope(req, { defaultAll: true });
+    if (!q) {
+      return sendOk(res, {
+        query: "",
+        results: []
+      }, tenantId, collection);
+    }
     const policy = resolveRequestedMemoryPolicy(req.query);
     const favorRecency = resolveRequestedFavorRecency(req.query);
     const retrievalFilters = parseRetrievalFilterInput(req.query || {});
