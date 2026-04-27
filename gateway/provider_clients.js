@@ -50,13 +50,37 @@ function resolveProviderApiKey(provider, overrideKey = "") {
   throw new Error(`${providerEnvKey(provider)} not set on server`);
 }
 
-function createAbortSignal(timeoutMs = PROVIDER_TIMEOUT_MS) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { signal: undefined, dispose: () => {} };
+function createAbortSignal(timeoutMs = PROVIDER_TIMEOUT_MS, externalSignal = undefined) {
+  const useTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  if (!useTimeout && !externalSignal) return { signal: undefined, dispose: () => {} };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("Request timed out")), timeoutMs);
+  let timer = null;
+  const abortWithReason = (reason) => {
+    if (controller.signal.aborted) return;
+    controller.abort(reason instanceof Error ? reason : (reason || new Error("Request aborted")));
+  };
+  const handleExternalAbort = () => {
+    abortWithReason(externalSignal?.reason || new Error("Request aborted"));
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      abortWithReason(externalSignal.reason || new Error("Request aborted"));
+    } else if (typeof externalSignal.addEventListener === "function") {
+      externalSignal.addEventListener("abort", handleExternalAbort, { once: true });
+    }
+  }
+  if (useTimeout) {
+    timer = setTimeout(() => abortWithReason(new Error("Request timed out")), timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+  }
   return {
     signal: controller.signal,
-    dispose: () => clearTimeout(timer)
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === "function") {
+        externalSignal.removeEventListener("abort", handleExternalAbort);
+      }
+    }
   };
 }
 
@@ -227,9 +251,10 @@ function buildRetryDelayMs(attempt, baseDelayMs) {
 }
 
 async function fetchJson(url, options = {}) {
-  const { signal, dispose } = createAbortSignal();
+  const { signal: upstreamSignal, ...requestOptions } = options || {};
+  const { signal, dispose } = createAbortSignal(PROVIDER_TIMEOUT_MS, upstreamSignal);
   try {
-    const res = await fetch(url, { ...options, signal });
+    const res = await fetch(url, { ...requestOptions, signal });
     const text = await res.text();
     let payload = null;
     try {
@@ -254,22 +279,47 @@ async function fetchJson(url, options = {}) {
   }
 }
 
-async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens }) {
+async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens, onToken, signal }) {
   const client = getOpenAIClient(apiKey);
+  if (typeof onToken === "function") {
+    const stream = client.responses.stream(buildOpenAiTextRequestBody({
+      model,
+      input,
+      temperature,
+      jsonMode,
+      maxTokens
+    }), { signal });
+    for await (const event of stream) {
+      if (event?.type !== "response.output_text.delta") continue;
+      const delta = String(event?.delta || "");
+      if (!delta) continue;
+      await onToken(delta, {
+        snapshot: Object.prototype.hasOwnProperty.call(event || {}, "snapshot")
+          ? event.snapshot
+          : undefined
+      });
+    }
+    const finalResponse = await stream.finalResponse();
+    const finalText = ensureGeneratedText(extractOpenAiText(finalResponse), { provider: "openai", model, jsonMode });
+    return {
+      text: finalText,
+      usage: extractOpenAiUsage(finalResponse?.usage)
+    };
+  }
   const resp = await client.responses.create(buildOpenAiTextRequestBody({
     model,
     input,
     temperature,
     jsonMode,
     maxTokens
-  }));
+  }), { signal });
   return {
     text: ensureGeneratedText(extractOpenAiText(resp), { provider: "openai", model, jsonMode }),
     usage: extractOpenAiUsage(resp?.usage)
   };
 }
 
-async function generateTextWithGemini({ model, input, apiKey, temperature, jsonMode = false, maxTokens }) {
+async function generateTextWithGemini({ model, input, apiKey, temperature, jsonMode = false, maxTokens, signal }) {
   const key = resolveProviderApiKey("gemini", apiKey);
   const generationConfig = {};
   if (temperature !== undefined) generationConfig.temperature = temperature;
@@ -293,7 +343,8 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
         "Content-Type": "application/json",
         "x-goog-api-key": key
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     }
   );
   return {
@@ -325,7 +376,7 @@ function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = f
   };
 }
 
-async function generateTextWithAnthropic({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096 }) {
+async function generateTextWithAnthropic({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096, signal }) {
   const key = resolveProviderApiKey("anthropic", apiKey);
   const payload = await fetchJson("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -340,7 +391,8 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
       temperature,
       jsonMode,
       maxTokens
-    }))
+    })),
+    signal
   });
   const extracted = extractAnthropicText(payload);
   const text = jsonMode && extracted && !extracted.trim().startsWith("{")
@@ -363,7 +415,9 @@ async function generateProviderText({
   maxRetries,
   retryDelayMs,
   retryOnEmptyText = true,
-  sleepFn
+  sleepFn,
+  onToken,
+  signal
 }) {
   const cleanProvider = normalizeProviderId(provider) || DEFAULT_ANSWER_PROVIDER;
   const retries = resolveRetryCount(maxRetries);
@@ -377,9 +431,31 @@ async function generateProviderText({
   }
 
   let lastError = null;
+  let streamedTextEmitted = false;
+  const forwardToken = typeof onToken === "function" && cleanProvider === "openai"
+    ? async (delta, meta = {}) => {
+        const textDelta = String(delta || "");
+        if (!textDelta) return;
+        streamedTextEmitted = true;
+        await onToken(textDelta, {
+          provider: cleanProvider,
+          model: model || null,
+          ...(meta && typeof meta === "object" ? meta : {})
+        });
+      }
+    : null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const result = await generator({ model, input, apiKey, temperature, jsonMode, maxTokens });
+      const result = await generator({
+        model,
+        input,
+        apiKey,
+        temperature,
+        jsonMode,
+        maxTokens,
+        onToken: forwardToken,
+        signal
+      });
       const text = String(result?.text || "").trim();
       if (!text && retryOnEmptyText && attempt < retries) {
         await wait(buildRetryDelayMs(attempt, baseDelayMs));
@@ -391,6 +467,9 @@ async function generateProviderText({
       };
     } catch (err) {
       lastError = err;
+      if (streamedTextEmitted) {
+        throw err;
+      }
       if (err?.code === "EMPTY_GENERATION") {
         if (!retryOnEmptyText || attempt >= retries) {
           throw err;
@@ -495,6 +574,7 @@ module.exports = {
   generateProviderText,
   embedProviderTexts,
   __testHooks: {
+    createAbortSignal,
     buildOpenAiTextRequestBody,
     buildAnthropicTextRequestBody,
     normalizeGeminiModelPath,

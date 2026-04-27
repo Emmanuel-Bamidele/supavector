@@ -332,6 +332,43 @@ async function testGenerateAnswerUsesAdaptivePromptSteeringForAuto() {
   assert.match(capturedInput, /bias toward the longer response/i);
 }
 
+async function testGenerateAnswerForwardsStreamedDeltas() {
+  const deltas = [];
+  const snapshots = [];
+  const result = await generateAnswer("What does SupaVector store?", [
+    {
+      chunk_id: "default::cli-smoke::welcome#0",
+      text: "SupaVector stores memory for agents."
+    }
+  ], {
+    provider: "openai",
+    model: "gpt-4o-mini",
+    answerLength: "short",
+    citationMode: "metadata",
+    onToken: async (delta, meta = {}) => {
+      deltas.push(delta);
+      snapshots.push(meta.snapshot);
+    },
+    generateText: async ({ onToken }) => {
+      await onToken("Supa", {});
+      await onToken("Vector stores", { snapshot: "SupaVector stores" });
+      await onToken(" memory for agents.", {});
+      return {
+        text: "SupaVector stores memory for agents.",
+        usage: { input_tokens: 10, output_tokens: 7, total_tokens: 17 }
+      };
+    }
+  });
+
+  assert.equal(result.answer, "SupaVector stores memory for agents.");
+  assert.deepEqual(deltas, ["Supa", "Vector stores", " memory for agents."]);
+  assert.deepEqual(snapshots, [
+    "Supa",
+    "SupaVector stores",
+    "SupaVector stores memory for agents."
+  ]);
+}
+
 async function main() {
   testShortChunkIsRetainedWhenItIsTheOnlyEvidence();
   testShortChunkIsRetainedAlongsideLongerEvidence();
@@ -353,6 +390,7 @@ async function main() {
   await testGenerateCodeAnswerReturnsGenerationUnavailableOnProviderFailure();
   await testGenerateBooleanAskReturnsInvalidOnProviderFailure();
   await testGenerateAnswerUsesAdaptivePromptSteeringForAuto();
+  await testGenerateAnswerForwardsStreamedDeltas();
   console.log("answer guard tests passed");
 }
 
