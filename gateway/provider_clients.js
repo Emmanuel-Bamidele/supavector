@@ -370,7 +370,6 @@ async function fetchEventStream(url, options = {}, { onEvent = null } = {}) {
     dispose();
   }
 }
-
 async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens, onToken, signal }) {
   const client = getOpenAIClient(apiKey);
   if (typeof onToken === "function") {
