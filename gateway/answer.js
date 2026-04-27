@@ -823,6 +823,9 @@ async function generateAnswer(question, chunks, options = {}) {
   const onPromptBuilt = typeof options?.onPromptBuilt === "function"
     ? options.onPromptBuilt
     : null;
+  const onToken = typeof options?.onToken === "function"
+    ? options.onToken
+    : null;
   const requestedAnswerLength = normalizeAnswerLength(options?.answerLength, "auto");
   const citationMode = normalizeCitationResponseMode(options?.citationMode, "inline");
 
@@ -877,6 +880,20 @@ async function generateAnswer(question, chunks, options = {}) {
   });
   const answerMaxTokens = resolveAnswerMaxTokens(effectiveAnswerLength);
   const textGenerator = resolveTextGenerator(options);
+  let streamedText = "";
+  const forwardToken = onToken
+    ? async (delta, meta = {}) => {
+        const textDelta = String(delta || "");
+        if (!textDelta) return;
+        streamedText += textDelta;
+        await onToken(textDelta, {
+          ...(meta && typeof meta === "object" ? meta : {}),
+          snapshot: Object.prototype.hasOwnProperty.call(meta || {}, "snapshot")
+            ? meta.snapshot
+            : streamedText
+        });
+      }
+    : null;
 
   let resp = null;
   try {
@@ -886,9 +903,14 @@ async function generateAnswer(question, chunks, options = {}) {
       input,
       apiKey: options?.apiKey,
       temperature: 0.2,
-      maxTokens: answerMaxTokens
+      maxTokens: answerMaxTokens,
+      onToken: forwardToken,
+      signal: options?.signal
     });
   } catch (err) {
+    if (streamedText) {
+      throw err;
+    }
     if (!fallbackWarned) {
       fallbackWarned = true;
       console.warn(`[answer] ${resolved.provider} generation unavailable, returning generation-unavailable response (${String(err?.message || err)})`);
