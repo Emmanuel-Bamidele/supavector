@@ -51,6 +51,37 @@ function makeErrorResponse(status, payload) {
   };
 }
 
+function makeEventStreamResponse(events) {
+  const encoder = new TextEncoder();
+  const chunks = (Array.isArray(events) ? events : []).map((entry) => {
+    const eventName = String(entry?.event || "message").trim();
+    const payload = entry?.data == null ? "" : JSON.stringify(entry.data);
+    return encoder.encode(`event: ${eventName}\ndata: ${payload}\n\n`);
+  });
+  let index = 0;
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get(name) {
+        return String(name || "").toLowerCase() === "content-type"
+          ? "text/event-stream; charset=utf-8"
+          : null;
+      }
+    },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (index >= chunks.length) return { value: undefined, done: true };
+            return { value: chunks[index++], done: false };
+          }
+        };
+      }
+    }
+  };
+}
+
 function testResolveProviderApiKeyAliases() {
   withEnv({ GEMINI_API: "test-gemini-key", GEMINI_API_KEY: undefined }, () => {
     assert.equal(resolveProviderApiKey("gemini"), "test-gemini-key");
@@ -244,6 +275,120 @@ async function testAnthropicGenerationJsonMode() {
   });
 }
 
+async function testGeminiStreamingGeneration() {
+  await withFetchStub(async (url, options) => {
+    assert.match(String(url), /streamGenerateContent\?alt=sse/);
+    assert.equal(options.headers["x-goog-api-key"], "gemini-key");
+    return makeEventStreamResponse([
+      {
+        data: {
+          candidates: [{
+            content: {
+              parts: [{ text: "Gemini " }]
+            }
+          }]
+        }
+      },
+      {
+        data: {
+          candidates: [{
+            content: {
+              parts: [{ text: "stream" }]
+            }
+          }],
+          usageMetadata: {
+            promptTokenCount: 5,
+            candidatesTokenCount: 2,
+            totalTokenCount: 7
+          }
+        }
+      }
+    ]);
+  }, async () => {
+    const deltas = [];
+    const result = await generateProviderText({
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+      input: "hello",
+      apiKey: "gemini-key",
+      onToken: async (delta) => {
+        deltas.push(delta);
+      }
+    });
+    assert.deepEqual(deltas, ["Gemini ", "stream"]);
+    assert.equal(result.text, "Gemini stream");
+    assert.equal(result.usage.total_tokens, 7);
+  });
+}
+
+async function testAnthropicStreamingGeneration() {
+  await withFetchStub(async (url, options) => {
+    assert.equal(String(url), "https://api.anthropic.com/v1/messages");
+    const body = JSON.parse(options.body);
+    assert.equal(body.stream, true);
+    return makeEventStreamResponse([
+      {
+        event: "message_start",
+        data: {
+          type: "message_start",
+          message: {
+            usage: {
+              input_tokens: 6,
+              output_tokens: 0
+            }
+          }
+        }
+      },
+      {
+        event: "content_block_delta",
+        data: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: "Anthropic "
+          }
+        }
+      },
+      {
+        event: "content_block_delta",
+        data: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "text_delta",
+            text: "stream"
+          }
+        }
+      },
+      {
+        event: "message_delta",
+        data: {
+          type: "message_delta",
+          usage: {
+            input_tokens: 6,
+            output_tokens: 2
+          }
+        }
+      }
+    ]);
+  }, async () => {
+    const deltas = [];
+    const result = await generateProviderText({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      input: "hello",
+      apiKey: "anthropic-key",
+      onToken: async (delta) => {
+        deltas.push(delta);
+      }
+    });
+    assert.deepEqual(deltas, ["Anthropic ", "stream"]);
+    assert.equal(result.text, "Anthropic stream");
+    assert.equal(result.usage.total_tokens, 8);
+  });
+}
+
 async function testGeminiEmbeddings() {
   await withFetchStub(async (url, options) => {
     assert.match(String(url), /embedContent/);
@@ -340,6 +485,8 @@ async function main() {
   await testGeminiGenerationRetriesBlankText();
   await testGeminiGenerationDoesNotRetryNonRetryableFailure();
   await testAnthropicGenerationJsonMode();
+  await testGeminiStreamingGeneration();
+  await testAnthropicStreamingGeneration();
   await testGeminiEmbeddings();
   console.log("provider client tests passed");
 }

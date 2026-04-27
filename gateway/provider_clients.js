@@ -136,15 +136,15 @@ function extractOpenAiText(payload) {
     .trim();
 }
 
-function extractGeminiText(payload) {
+function extractGeminiText(payload, { trim = true } = {}) {
   const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
   const parts = candidates[0]?.content?.parts;
   const list = Array.isArray(parts) ? parts : [];
-  return list
+  const text = list
     .map((item) => (typeof item?.text === "string" ? item.text : ""))
     .filter(Boolean)
-    .join("\n")
-    .trim();
+    .join("\n");
+  return trim ? text.trim() : text;
 }
 
 function extractGeminiUsage(payload) {
@@ -279,6 +279,97 @@ async function fetchJson(url, options = {}) {
   }
 }
 
+async function fetchEventStream(url, options = {}, { onEvent = null } = {}) {
+  const { signal: upstreamSignal, ...requestOptions } = options || {};
+  const { signal, dispose } = createAbortSignal(PROVIDER_TIMEOUT_MS, upstreamSignal);
+  try {
+    const res = await fetch(url, { ...requestOptions, signal });
+    if (!res.ok) {
+      const text = await res.text();
+      let payload = null;
+      try {
+        payload = text ? JSON.parse(text) : null;
+      } catch {
+        payload = { raw: text };
+      }
+      const message = payload?.error?.message
+        || payload?.error
+        || payload?.message
+        || res.statusText
+        || `HTTP ${res.status}`;
+      const err = new Error(message);
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
+    }
+    const contentType = String(res.headers?.get?.("content-type") || "").toLowerCase();
+    if (!contentType.includes("text/event-stream") || !res.body?.getReader) {
+      const text = await res.text();
+      try {
+        return text ? JSON.parse(text) : null;
+      } catch {
+        return text || null;
+      }
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventName = "message";
+    let dataLines = [];
+
+    const dispatchEvent = async () => {
+      const raw = dataLines.join("\n");
+      let payload = null;
+      if (raw) {
+        try {
+          payload = JSON.parse(raw);
+        } catch {
+          payload = { raw };
+        }
+      }
+      const type = eventName || "message";
+      eventName = "message";
+      dataLines = [];
+      if (type === "error") {
+        const err = new Error(payload?.error?.message || payload?.error || payload?.message || "Streaming request failed");
+        err.status = Number(payload?.status || 0) || null;
+        err.payload = payload;
+        throw err;
+      }
+      if (typeof onEvent === "function") {
+        await onEvent({ event: type, data: payload });
+      }
+    };
+
+    const consumeBuffer = async (flush = false) => {
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).replace(/\r$/, "");
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) {
+          if (dataLines.length) await dispatchEvent();
+        } else if (!line.startsWith(":")) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim() || "message";
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+      if (flush && dataLines.length) await dispatchEvent();
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      await consumeBuffer(false);
+    }
+    buffer += decoder.decode();
+    await consumeBuffer(true);
+    return null;
+  } finally {
+    dispose();
+  }
+}
 async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens, onToken, signal }) {
   const client = getOpenAIClient(apiKey);
   if (typeof onToken === "function") {
@@ -319,7 +410,7 @@ async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonM
   };
 }
 
-async function generateTextWithGemini({ model, input, apiKey, temperature, jsonMode = false, maxTokens, signal }) {
+async function generateTextWithGemini({ model, input, apiKey, temperature, jsonMode = false, maxTokens, onToken, signal }) {
   const key = resolveProviderApiKey("gemini", apiKey);
   const generationConfig = {};
   if (temperature !== undefined) generationConfig.temperature = temperature;
@@ -335,6 +426,40 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
     ...(isStructured ? { systemInstruction: { parts: [{ text: String(input.system || "") }] } } : {}),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {})
   };
+  if (typeof onToken === "function") {
+    let streamedText = "";
+    let usage = null;
+    await fetchEventStream(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(normalizeGeminiModelPath(model))}:streamGenerateContent?alt=sse`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": key
+        },
+        body: JSON.stringify(body),
+        signal
+      },
+      {
+        onEvent: async ({ data }) => {
+          const payload = data && typeof data === "object" ? data : null;
+          const delta = extractGeminiText(payload, { trim: false });
+          if (delta) {
+            streamedText += delta;
+            await onToken(delta, {});
+          }
+          const nextUsage = extractGeminiUsage(payload);
+          if (nextUsage && Number(nextUsage.total_tokens || 0) > 0) {
+            usage = nextUsage;
+          }
+        }
+      }
+    );
+    return {
+      text: ensureGeneratedText(streamedText, { provider: "gemini", model, jsonMode }),
+      usage
+    };
+  }
   const payload = await fetchJson(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(normalizeGeminiModelPath(model))}:generateContent`,
     {
@@ -353,7 +478,7 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
   };
 }
 
-function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens = 4096 }) {
+function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens = 4096, stream = false }) {
   const isStructured = input && typeof input === "object" && !Array.isArray(input) && input.system !== undefined;
   const systemParts = [];
   if (isStructured && String(input.system || "").trim()) {
@@ -370,14 +495,61 @@ function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = f
   return {
     model,
     max_tokens: maxTokens,
+    ...(stream ? { stream: true } : {}),
     ...(systemParts.length ? { system: systemParts.join("\n\n") } : {}),
     messages,
     ...(temperature !== undefined ? { temperature } : {})
   };
 }
 
-async function generateTextWithAnthropic({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096, signal }) {
+async function generateTextWithAnthropic({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096, onToken, signal }) {
   const key = resolveProviderApiKey("anthropic", apiKey);
+  if (typeof onToken === "function") {
+    let streamedText = "";
+    let usage = null;
+    await fetchEventStream("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": ANTHROPIC_VERSION
+      },
+      body: JSON.stringify(buildAnthropicTextRequestBody({
+        model,
+        input,
+        temperature,
+        jsonMode,
+        maxTokens,
+        stream: true
+      })),
+      signal
+    }, {
+      onEvent: async ({ event, data }) => {
+        if (event === "content_block_delta" && data?.delta?.type === "text_delta") {
+          const delta = String(data?.delta?.text || "");
+          if (delta) {
+            streamedText += delta;
+            await onToken(delta, {});
+          }
+        }
+        const nextUsage = data?.usage
+          ? extractAnthropicUsage(data)
+          : data?.message?.usage
+            ? extractAnthropicUsage(data.message)
+            : null;
+        if (nextUsage && Number(nextUsage.total_tokens || 0) > 0) {
+          usage = nextUsage;
+        }
+      }
+    });
+    const text = jsonMode && streamedText && !streamedText.trim().startsWith("{")
+      ? `{${streamedText}`
+      : streamedText;
+    return {
+      text: ensureGeneratedText(text, { provider: "anthropic", model, jsonMode }),
+      usage
+    };
+  }
   const payload = await fetchJson("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -390,7 +562,8 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
       input,
       temperature,
       jsonMode,
-      maxTokens
+      maxTokens,
+      stream: false
     })),
     signal
   });
@@ -432,7 +605,7 @@ async function generateProviderText({
 
   let lastError = null;
   let streamedTextEmitted = false;
-  const forwardToken = typeof onToken === "function" && cleanProvider === "openai"
+  const forwardToken = typeof onToken === "function"
     ? async (delta, meta = {}) => {
         const textDelta = String(delta || "");
         if (!textDelta) return;
