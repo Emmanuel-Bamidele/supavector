@@ -51,13 +51,29 @@ function makeErrorResponse(status, payload) {
   };
 }
 
-function makeEventStreamResponse(events) {
+function makeEventStreamResponse(events, { contentType = "text/event-stream; charset=utf-8", chunkBytes = 0 } = {}) {
   const encoder = new TextEncoder();
-  const chunks = (Array.isArray(events) ? events : []).map((entry) => {
+  const bytes = (Array.isArray(events) ? events : []).map((entry) => {
     const eventName = String(entry?.event || "message").trim();
     const payload = entry?.data == null ? "" : JSON.stringify(entry.data);
     return encoder.encode(`event: ${eventName}\ndata: ${payload}\n\n`);
   });
+  const source = chunkBytes > 0
+    ? (() => {
+        const merged = bytes.reduce((total, chunk) => total + chunk.length, 0);
+        const combined = new Uint8Array(merged);
+        let offset = 0;
+        for (const chunk of bytes) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const slices = [];
+        for (let index = 0; index < combined.length; index += chunkBytes) {
+          slices.push(combined.slice(index, index + chunkBytes));
+        }
+        return slices;
+      })()
+    : bytes;
   let index = 0;
   return {
     ok: true,
@@ -65,7 +81,7 @@ function makeEventStreamResponse(events) {
     headers: {
       get(name) {
         return String(name || "").toLowerCase() === "content-type"
-          ? "text/event-stream; charset=utf-8"
+          ? contentType
           : null;
       }
     },
@@ -73,8 +89,8 @@ function makeEventStreamResponse(events) {
       getReader() {
         return {
           async read() {
-            if (index >= chunks.length) return { value: undefined, done: true };
-            return { value: chunks[index++], done: false };
+            if (index >= source.length) return { value: undefined, done: true };
+            return { value: source[index++], done: false };
           }
         };
       }
@@ -279,6 +295,7 @@ async function testGeminiStreamingGeneration() {
   await withFetchStub(async (url, options) => {
     assert.match(String(url), /streamGenerateContent\?alt=sse/);
     assert.equal(options.headers["x-goog-api-key"], "gemini-key");
+    assert.equal(options.headers.Accept, "text/event-stream");
     return makeEventStreamResponse([
       {
         data: {
@@ -321,11 +338,99 @@ async function testGeminiStreamingGeneration() {
   });
 }
 
+async function testGeminiStreamingGenerationHandlesCumulativeChunks() {
+  await withFetchStub(async () => makeEventStreamResponse([
+    {
+      data: {
+        candidates: [{
+          content: {
+            parts: [{ text: "Gemini" }]
+          }
+        }]
+      }
+    },
+    {
+      data: {
+        candidates: [{
+          content: {
+            parts: [{ text: "Gemini stream" }]
+          }
+        }],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 2,
+          totalTokenCount: 7
+        }
+      }
+    }
+  ]), async () => {
+    const deltas = [];
+    const result = await generateProviderText({
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+      input: "hello",
+      apiKey: "gemini-key",
+      onToken: async (delta) => {
+        deltas.push(delta);
+      }
+    });
+    assert.deepEqual(deltas, ["Gemini", " stream"]);
+    assert.equal(result.text, "Gemini stream");
+    assert.equal(result.usage.total_tokens, 7);
+  });
+}
+
+async function testGeminiStreamingGenerationHandlesMislabelledSse() {
+  await withFetchStub(async () => makeEventStreamResponse([
+    {
+      data: {
+        candidates: [{
+          content: {
+            parts: [{ text: "Gemini " }]
+          }
+        }]
+      }
+    },
+    {
+      data: {
+        candidates: [{
+          content: {
+            parts: [{ text: "stream" }]
+          }
+        }],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 2,
+          totalTokenCount: 7
+        }
+      }
+    }
+  ], {
+    contentType: "application/json; charset=utf-8",
+    chunkBytes: 17
+  }), async () => {
+    const deltas = [];
+    const result = await generateProviderText({
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+      input: "hello",
+      apiKey: "gemini-key",
+      onToken: async (delta) => {
+        deltas.push(delta);
+      }
+    });
+    assert.deepEqual(deltas, ["Gemini ", "stream"]);
+    assert.equal(result.text, "Gemini stream");
+    assert.equal(result.usage.total_tokens, 7);
+  });
+}
+
 async function testAnthropicStreamingGeneration() {
   await withFetchStub(async (url, options) => {
     assert.equal(String(url), "https://api.anthropic.com/v1/messages");
     const body = JSON.parse(options.body);
     assert.equal(body.stream, true);
+    assert.equal(options.headers.Accept, "text/event-stream");
     return makeEventStreamResponse([
       {
         event: "message_start",
@@ -384,6 +489,72 @@ async function testAnthropicStreamingGeneration() {
       }
     });
     assert.deepEqual(deltas, ["Anthropic ", "stream"]);
+    assert.equal(result.text, "Anthropic stream");
+    assert.equal(result.usage.total_tokens, 8);
+  });
+}
+
+async function testAnthropicStreamingGenerationHandlesMislabelledSseAndStartText() {
+  await withFetchStub(async () => makeEventStreamResponse([
+    {
+      event: "message_start",
+      data: {
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: 6,
+            output_tokens: 0
+          }
+        }
+      }
+    },
+    {
+      event: "content_block_start",
+      data: {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "text",
+          text: "Anthropic"
+        }
+      }
+    },
+    {
+      event: "content_block_delta",
+      data: {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "text_delta",
+          text: " stream"
+        }
+      }
+    },
+    {
+      event: "message_delta",
+      data: {
+        type: "message_delta",
+        usage: {
+          input_tokens: 6,
+          output_tokens: 2
+        }
+      }
+    }
+  ], {
+    contentType: "application/json",
+    chunkBytes: 19
+  }), async () => {
+    const deltas = [];
+    const result = await generateProviderText({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      input: "hello",
+      apiKey: "anthropic-key",
+      onToken: async (delta) => {
+        deltas.push(delta);
+      }
+    });
+    assert.deepEqual(deltas, ["Anthropic", " stream"]);
     assert.equal(result.text, "Anthropic stream");
     assert.equal(result.usage.total_tokens, 8);
   });
@@ -486,7 +657,10 @@ async function main() {
   await testGeminiGenerationDoesNotRetryNonRetryableFailure();
   await testAnthropicGenerationJsonMode();
   await testGeminiStreamingGeneration();
+  await testGeminiStreamingGenerationHandlesCumulativeChunks();
+  await testGeminiStreamingGenerationHandlesMislabelledSse();
   await testAnthropicStreamingGeneration();
+  await testAnthropicStreamingGenerationHandlesMislabelledSseAndStartText();
   await testGeminiEmbeddings();
   console.log("provider client tests passed");
 }
