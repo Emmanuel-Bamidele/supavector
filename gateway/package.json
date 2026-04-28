@@ -22,7 +22,7 @@
   "type": "commonjs",
   "dependencies": {
     "@node-saml/node-saml": "^5.1.0",
-    "bcryptjs": "^2.4.3",
+    "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
