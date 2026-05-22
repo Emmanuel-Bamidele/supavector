@@ -612,17 +612,21 @@ function parseGitHubRepoSpec(raw) {
 
 function isProbablyTextBuffer(buffer) {
   if (!buffer || !buffer.length) return true;
+  if (buffer.includes(0)) return false;
   const sample = buffer.subarray(0, Math.min(buffer.length, 2048));
   let weird = 0;
   for (const byte of sample) {
-    if (byte === 0) return false;
     if (byte < 7 || (byte > 14 && byte < 32)) weird += 1;
   }
   return weird / sample.length < 0.15;
 }
 
+function sanitizeExtractedText(value) {
+  return String(value || "").replace(/\u0000/g, "");
+}
+
 function normalizeExtractedText(value) {
-  return String(value || "")
+  return sanitizeExtractedText(value)
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -681,7 +685,7 @@ async function extractDocumentText(filePath, options = {}) {
     if (!isProbablyTextBuffer(raw)) {
       throw new Error(`Binary or non-text content is not supported for ${path.basename(absPath)}`);
     }
-    return raw.toString("utf8");
+    return sanitizeExtractedText(raw.toString("utf8"));
   }
   if (fileType === "pdf") {
     return extractPdfText(raw, absPath, options);
@@ -854,6 +858,7 @@ module.exports = {
   maskSecret,
   mergeEnvText,
   normalizeExtractedText,
+  sanitizeExtractedText,
   normalizeCommandName,
   normalizeConfiguredModel,
   normalizeEmbeddingModelSelectionForProvider,

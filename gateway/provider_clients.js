@@ -182,6 +182,52 @@ function extractOpenAiUsage(usage) {
   };
 }
 
+function parseJsonOrRawText(text) {
+  const raw = String(text || "");
+  try {
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return raw || null;
+  }
+}
+
+function detectStreamPayloadMode(buffer = "") {
+  const text = String(buffer || "").replace(/^\uFEFF/, "");
+  const trimmed = text.trimStart();
+  if (!trimmed) return "detect";
+  if (/^(event:|data:|:)/.test(trimmed)) return "sse";
+  if (
+    trimmed.startsWith("{")
+    || trimmed.startsWith("[")
+    || trimmed.startsWith("\"")
+    || trimmed.startsWith("null")
+    || trimmed.startsWith("true")
+    || trimmed.startsWith("false")
+    || /^-?\d/.test(trimmed)
+  ) {
+    return "raw";
+  }
+  if (trimmed.length >= 64 || trimmed.includes("\n")) {
+    return "raw";
+  }
+  return "detect";
+}
+
+function resolveObservedStreamDelta({ observedText = "", emittedText = "", previousObservedText = "" } = {}) {
+  const observed = String(observedText || "");
+  if (!observed) return "";
+  const emitted = String(emittedText || "");
+  const previousObserved = String(previousObservedText || "");
+  if (previousObserved && observed === previousObserved) return "";
+  if (emitted && observed.startsWith(emitted)) {
+    return observed.slice(emitted.length);
+  }
+  if (previousObserved && observed.startsWith(previousObserved)) {
+    return observed.slice(previousObserved.length);
+  }
+  return observed;
+}
+
 function ensureGeneratedText(text, { provider, model, jsonMode = false } = {}) {
   const clean = String(text || "").trim();
   if (clean) return clean;
@@ -302,31 +348,25 @@ async function fetchEventStream(url, options = {}, { onEvent = null } = {}) {
       err.payload = payload;
       throw err;
     }
-    const contentType = String(res.headers?.get?.("content-type") || "").toLowerCase();
-    if (!contentType.includes("text/event-stream") || !res.body?.getReader) {
+    if (!res.body?.getReader) {
       const text = await res.text();
-      try {
-        return text ? JSON.parse(text) : null;
-      } catch {
-        return text || null;
-      }
+      return parseJsonOrRawText(text);
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let rawBuffer = "";
     let eventName = "message";
     let dataLines = [];
+    let payloadMode = detectStreamPayloadMode(
+      String(res.headers?.get?.("content-type") || "").toLowerCase().includes("text/event-stream")
+        ? "data:"
+        : ""
+    );
 
     const dispatchEvent = async () => {
       const raw = dataLines.join("\n");
-      let payload = null;
-      if (raw) {
-        try {
-          payload = JSON.parse(raw);
-        } catch {
-          payload = { raw };
-        }
-      }
+      const payload = raw ? parseJsonOrRawText(raw) : null;
       const type = eventName || "message";
       eventName = "message";
       dataLines = [];
@@ -360,12 +400,24 @@ async function fetchEventStream(url, options = {}, { onEvent = null } = {}) {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      await consumeBuffer(false);
+      const decoded = decoder.decode(value, { stream: true });
+      buffer += decoded;
+      if (payloadMode !== "sse") rawBuffer += decoded;
+      if (payloadMode !== "sse") payloadMode = detectStreamPayloadMode(rawBuffer);
+      if (payloadMode === "sse") {
+        rawBuffer = "";
+        await consumeBuffer(false);
+      }
     }
-    buffer += decoder.decode();
-    await consumeBuffer(true);
-    return null;
+    const tail = decoder.decode();
+    buffer += tail;
+    if (payloadMode !== "sse") rawBuffer += tail;
+    if (payloadMode !== "sse") payloadMode = detectStreamPayloadMode(rawBuffer);
+    if (payloadMode === "sse") {
+      await consumeBuffer(true);
+      return null;
+    }
+    return parseJsonOrRawText(rawBuffer);
   } finally {
     dispose();
   }
@@ -428,12 +480,14 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
   };
   if (typeof onToken === "function") {
     let streamedText = "";
+    let lastObservedText = "";
     let usage = null;
-    await fetchEventStream(
+    const fallbackPayload = await fetchEventStream(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(normalizeGeminiModelPath(model))}:streamGenerateContent?alt=sse`,
       {
         method: "POST",
         headers: {
+          "Accept": "text/event-stream",
           "Content-Type": "application/json",
           "x-goog-api-key": key
         },
@@ -443,7 +497,13 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
       {
         onEvent: async ({ data }) => {
           const payload = data && typeof data === "object" ? data : null;
-          const delta = extractGeminiText(payload, { trim: false });
+          const observedText = extractGeminiText(payload, { trim: false });
+          const delta = resolveObservedStreamDelta({
+            observedText,
+            emittedText: streamedText,
+            previousObservedText: lastObservedText
+          });
+          if (observedText) lastObservedText = observedText;
           if (delta) {
             streamedText += delta;
             await onToken(delta, {});
@@ -455,6 +515,17 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
         }
       }
     );
+    if (!streamedText && fallbackPayload && typeof fallbackPayload === "object") {
+      const fallbackText = extractGeminiText(fallbackPayload, { trim: false });
+      if (fallbackText) {
+        streamedText = fallbackText;
+        await onToken(fallbackText, {});
+      }
+      const fallbackUsage = extractGeminiUsage(fallbackPayload);
+      if (fallbackUsage && Number(fallbackUsage.total_tokens || 0) > 0) {
+        usage = fallbackUsage;
+      }
+    }
     return {
       text: ensureGeneratedText(streamedText, { provider: "gemini", model, jsonMode }),
       usage
@@ -507,9 +578,10 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
   if (typeof onToken === "function") {
     let streamedText = "";
     let usage = null;
-    await fetchEventStream("https://api.anthropic.com/v1/messages", {
+    const fallbackPayload = await fetchEventStream("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
+        "Accept": "text/event-stream",
         "Content-Type": "application/json",
         "x-api-key": key,
         "anthropic-version": ANTHROPIC_VERSION
@@ -525,6 +597,13 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
       signal
     }, {
       onEvent: async ({ event, data }) => {
+        if (event === "content_block_start" && data?.content_block?.type === "text") {
+          const startText = String(data?.content_block?.text || "");
+          if (startText) {
+            streamedText += startText;
+            await onToken(startText, {});
+          }
+        }
         if (event === "content_block_delta" && data?.delta?.type === "text_delta") {
           const delta = String(data?.delta?.text || "");
           if (delta) {
@@ -542,6 +621,17 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
         }
       }
     });
+    if (!streamedText && fallbackPayload && typeof fallbackPayload === "object") {
+      const fallbackText = extractAnthropicText(fallbackPayload);
+      if (fallbackText) {
+        streamedText = fallbackText;
+        await onToken(fallbackText, {});
+      }
+      const fallbackUsage = extractAnthropicUsage(fallbackPayload);
+      if (fallbackUsage && Number(fallbackUsage.total_tokens || 0) > 0) {
+        usage = fallbackUsage;
+      }
+    }
     const text = jsonMode && streamedText && !streamedText.trim().startsWith("{")
       ? `{${streamedText}`
       : streamedText;
@@ -751,6 +841,9 @@ module.exports = {
     buildOpenAiTextRequestBody,
     buildAnthropicTextRequestBody,
     normalizeGeminiModelPath,
+    parseJsonOrRawText,
+    detectStreamPayloadMode,
+    resolveObservedStreamDelta,
     extractGeminiText,
     extractAnthropicText,
     extractOpenAiText,

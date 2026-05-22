@@ -256,6 +256,10 @@ function testFolderHelpers() {
   assert.equal(safeDocIdFromPath("guides/intro file.md"), "guides__intro-file.md");
   assert.equal(isProbablyTextBuffer(Buffer.from("hello world", "utf8")), true);
   assert.equal(isProbablyTextBuffer(Buffer.from([0, 1, 2, 3])), false);
+  assert.equal(isProbablyTextBuffer(Buffer.concat([
+    Buffer.from("a".repeat(3000), "utf8"),
+    Buffer.from([0])
+  ])), false);
   assert.equal(detectCodeLanguage("src/index.ts"), "typescript");
   assert.equal(detectCodeLanguage("Dockerfile"), "docker");
   assert.equal(detectCodeLanguage("README.md"), null);
@@ -294,12 +298,12 @@ async function testDocumentExtraction() {
     assert.equal(await extractDocumentText(textPath), "Hello from SupaVector.\n");
 
     const pdfText = await extractDocumentText(pdfPath, {
-      extractPdfText: async () => "PDF content\n\nwith spacing"
+      extractPdfText: async () => "PDF content\u0000\n\nwith spacing"
     });
     assert.equal(pdfText, "PDF content\n\nwith spacing");
 
     const docxText = await extractDocumentText(docxPath, {
-      extractDocxText: async () => "DOCX content\r\n\r\nwith spacing"
+      extractDocxText: async () => "DOCX content\u0000\r\n\r\nwith spacing"
     });
     assert.equal(docxText, "DOCX content\n\nwith spacing");
   });
