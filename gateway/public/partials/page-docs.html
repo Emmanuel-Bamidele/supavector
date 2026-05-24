@@ -608,6 +608,8 @@ X-Anthropic-API-Key: YOUR_ANTHROPIC_KEY</pre>
                       <tr><td><span class="mono">POST /v1/memory/cleanup</span></td><td>Admin</td></tr>
                       <tr><td><span class="mono">POST /v1/memory/compact</span></td><td>Admin</td></tr>
                       <tr><td><span class="mono">DELETE /v1/collections/:collection</span></td><td>Admin</td></tr>
+                      <tr><td><span class="mono">GET /v1/admin/vector/search-runtime</span></td><td>Admin</td></tr>
+                      <tr><td><span class="mono">POST /v1/admin/vector/reindex</span></td><td>Admin</td></tr>
                       <tr><td><span class="mono">/v1/admin/service-tokens</span></td><td>Admin</td></tr>
                       <tr><td><span class="mono">/v1/admin/tenant</span></td><td>Admin</td></tr>
                       <tr><td><span class="mono">/v1/admin/usage</span></td><td>Admin</td></tr>
@@ -2186,6 +2188,13 @@ supavector uninstall</pre>
 supavector config show --show-secrets</pre>
                 </div>
                 <div class="doc-block">
+                  <div class="doc-label">Vector search operations</div>
+                  <pre class="doc-code">supavector vector runtime
+supavector vector runtime --json
+supavector vector reindex --mode always</pre>
+                  <p class="hint"><span class="mono">runtime</span> shows exact/ANN mode, ANN readiness, rollout, shadow overlap, fallback reasons, and circuit-breaker state. Use <span class="mono">reindex --mode always</span> after an embedding-model change or vector-store restore when you need to rebuild vectors from stored chunks.</p>
+                </div>
+                <div class="doc-block">
                   <div class="doc-label">Common overrides</div>
                   <ul>
                     <li><span class="mono">--project-root</span> to point at a specific Supavector checkout</li>
@@ -3713,6 +3722,7 @@ SUPAVECTOR_API_KEY=supav_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</pre>
                   <div class="doc-label">What the vector-store owns</div>
                   <ul>
                     <li>Embedding vectors.</li>
+                    <li>The optional ANN side index used for large-candidate dense retrieval.</li>
                     <li>Optional vector WAL persistence when <span class="mono">VECTOR_WAL=1</span>.</li>
                     <li>Similarity search state used during retrieval.</li>
                   </ul>
@@ -3723,7 +3733,7 @@ SUPAVECTOR_API_KEY=supav_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</pre>
                 </div>
                 <div class="doc-block">
                   <div class="doc-label">Operational implication</div>
-                  <p>With the default OSS profile, Postgres is the restore source of truth and the gateway can reindex vectors on startup. If you enable <span class="mono">VECTOR_WAL=1</span>, back up Postgres and the vector WAL together.</p>
+                  <p>With the default OSS profile, Postgres is the restore source of truth and the gateway can reindex vectors on startup. If you enable <span class="mono">VECTOR_WAL=1</span>, back up Postgres and the vector WAL together. ANN is a derived side index: roll it out with <span class="mono">VECTOR_SEARCH_MODE=shadow</span>, then <span class="mono">auto</span> after overlap and latency telemetry are acceptable.</p>
                 </div>
               </div>
             </details>
@@ -3998,6 +4008,7 @@ SUPAVECTOR_API_KEY=supav_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</pre>
                   <div class="doc-label">High-signal telemetry surfaces</div>
                   <ul>
                     <li><span class="mono">/v1/metrics</span> and Prometheus scrape metrics for request, job, and runtime visibility.</li>
+                    <li><span class="mono">/v1/admin/vector/search-runtime</span> for ANN readiness, rollout, shadow overlap, fallback reasons, circuit state, and reindex status.</li>
                     <li>Job status endpoints for reflection, compaction, and long-running memory work.</li>
                     <li>Usage and storage views to understand hosted usage growth and indexing patterns.</li>
                     <li>Structured logs with request, tenant, and collection context for incident review.</li>

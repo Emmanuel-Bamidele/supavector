@@ -3732,6 +3732,121 @@
         "x-internal": true
       }
     },
+    "/v1/admin/vector/search-runtime": {
+      "get": {
+        "tags": [
+          "Metrics"
+        ],
+        "summary": "Vector search runtime",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/OkResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "vector": {
+                              "type": "object",
+                              "description": "Vector-store health and ANN index readiness."
+                            },
+                            "runtime": {
+                              "type": "object",
+                              "description": "ANN/exact search mode, rollout, fallback, shadow-overlap, and circuit-breaker runtime state."
+                            },
+                            "reindex": {
+                              "type": "object",
+                              "description": "Current and last vector reindex state."
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Admin-only dense vector search runtime diagnostics for ANN rollout and exact fallback monitoring.",
+        "x-internal": true
+      }
+    },
+    "/v1/admin/vector/reindex": {
+      "post": {
+        "tags": [
+          "Metrics"
+        ],
+        "summary": "Reindex vectors",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "always",
+                      "off"
+                    ],
+                    "default": "always"
+                  }
+                }
+              },
+              "example": {
+                "mode": "always"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/OkResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "accepted": {
+                              "type": "boolean"
+                            },
+                            "mode": {
+                              "type": "string"
+                            },
+                            "reindex": {
+                              "type": "object"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Start an admin-triggered vector rebuild from stored chunks. Use after embedding-model changes, vector-store restores, or ANN/vector count mismatch remediation.",
+        "x-internal": true
+      }
+    },
     "/v1/metrics": {
       "get": {
         "tags": [

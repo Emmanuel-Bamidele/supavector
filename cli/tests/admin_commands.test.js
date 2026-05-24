@@ -152,6 +152,84 @@ async function testTenantTokenCreateCommand() {
   });
 }
 
+async function testVectorRuntimeCommand() {
+  await withMockServer(async (req) => {
+    assert.equal(req.method, "GET");
+    assert.equal(req.path, "/v1/admin/vector/search-runtime");
+    assert.equal(req.headers["x-api-key"], "supav_test_token");
+    return {
+      body: {
+        ok: true,
+        data: {
+          vector: {
+            vectors: 100,
+            vectorDims: 1536,
+            ann: {
+              enabled: true,
+              mode: "shadow",
+              indexReady: true,
+              indexVectors: 100,
+              circuitOpen: false
+            }
+          },
+          runtime: {
+            total: 12,
+            modes: { exact: 10, ann: 2 },
+            fallbacks: {},
+            dense_search_ms: { p95: 8 },
+            scanned_count: { p95: 5000 },
+            shadow: { top_k_overlap: { avg: 0.9 } }
+          },
+          reindex: {
+            running: false,
+            last: { status: "completed" }
+          }
+        },
+        meta: {}
+      }
+    };
+  }, async ({ baseUrl }) => {
+    const result = await runCli(["vector", "runtime", "--json"], {
+      SUPAVECTOR_BASE_URL: baseUrl,
+      SUPAVECTOR_API_KEY: "supav_test_token"
+    });
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.data.vector.ann.indexReady, true);
+    assert.equal(payload.data.runtime.total, 12);
+  });
+}
+
+async function testVectorReindexCommand() {
+  await withMockServer(async (req) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.path, "/v1/admin/vector/reindex");
+    assert.equal(req.headers["x-api-key"], "supav_test_token");
+    assert.deepEqual(req.body, { mode: "auto" });
+    return {
+      body: {
+        ok: true,
+        data: {
+          accepted: true,
+          mode: "auto",
+          reindex: {
+            running: true,
+            last: { status: "running" }
+          }
+        },
+        meta: {}
+      }
+    };
+  }, async ({ baseUrl }) => {
+    const result = await runCli(["vector", "reindex", "--mode", "auto", "--json"], {
+      SUPAVECTOR_BASE_URL: baseUrl,
+      SUPAVECTOR_API_KEY: "supav_test_token"
+    });
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.data.accepted, true);
+    assert.equal(payload.data.mode, "auto");
+  });
+}
+
 async function testTenantUpdateCommand() {
   await withMockServer(async (req) => {
     assert.equal(req.method, "PATCH");
@@ -648,6 +726,8 @@ exit 1
 }
 
 async function main() {
+  await testVectorRuntimeCommand();
+  await testVectorReindexCommand();
   await testTenantTokenCreateCommand();
   await testTenantUpdateCommand();
   await testEnterpriseTenantCreateCommand();

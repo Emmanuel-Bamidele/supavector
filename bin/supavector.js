@@ -85,6 +85,8 @@ Usage:
   supavector tenants users list|create|update --tenant TENANT [user flags...]
   supavector tenants tokens list|create|revoke --tenant TENANT [token flags...]
   supavector audit list [--tenant TENANT] [--limit 100]
+  supavector vector runtime [--json]
+  supavector vector reindex [--mode auto|always|off] [--json]
   supavector memories list|get|create|update|delete|status [memory flags...]
   supavector collections list [--json]
   supavector collections delete --collection NAME [--yes] [--json]
@@ -194,6 +196,7 @@ Tenant / enterprise setup flags:
   --action NAME
   --target-type TYPE
   --target-id ID
+  --mode auto|always|off        Reindex mode for vector admin commands
 
 Memory flags:
   --id ID
@@ -3174,6 +3177,42 @@ function renderAuditLogs(logs) {
   }
 }
 
+function renderVectorRuntime(data) {
+  const vector = data.vector || {};
+  const ann = vector.ann || {};
+  const runtime = data.runtime || {};
+  const config = runtime.config || {};
+  const reindex = data.reindex || {};
+  printSummary("Vector search runtime.", [
+    `vectors: ${vector.vectors ?? "(unknown)"}`,
+    `dimensions: ${vector.vectorDims ?? "(unknown)"}`,
+    `ANN enabled: ${ann.enabled ? "yes" : "no"}`,
+    `ANN mode: ${ann.mode || config.mode || "(unknown)"}`,
+    `ANN index ready: ${ann.indexReady ? "yes" : "no"}`,
+    `ANN index vectors: ${ann.indexVectors ?? "(unknown)"}`,
+    `ANN circuit open: ${ann.circuitOpen ? "yes" : "no"}`,
+    `searches observed: ${runtime.total ?? 0}`,
+    `modes: ${JSON.stringify(runtime.modes || {})}`,
+    `fallbacks: ${JSON.stringify(runtime.fallbacks || {})}`,
+    `dense p95 ms: ${runtime.dense_search_ms?.p95 ?? "(none)"}`,
+    `scanned p95: ${runtime.scanned_count?.p95 ?? "(none)"}`,
+    `shadow overlap avg: ${runtime.shadow?.top_k_overlap?.avg ?? "(none)"}`,
+    `reindex running: ${reindex.running ? "yes" : "no"}`,
+    `last reindex: ${reindex.last?.status || "(none)"}`
+  ]);
+}
+
+function renderVectorReindex(data, fallbackMode) {
+  const reindex = data.reindex || {};
+  printSummary("Vector reindex requested.", [
+    `accepted: ${data.accepted ? "yes" : "no"}`,
+    `mode: ${data.mode || fallbackMode || "(unknown)"}`,
+    `running: ${reindex.running ? "yes" : "no"}`,
+    `status: ${reindex.last?.status || "(pending)"}`,
+    `startedAt: ${formatDateTime(reindex.last?.startedAt)}`
+  ]);
+}
+
 function renderMemoriesList(memories, title = "Memories") {
   if (!memories.length) {
     console.log(`No ${title.toLowerCase()}.`);
@@ -4299,6 +4338,29 @@ async function handleAudit(parsed) {
   printJsonOrSummary(parsed, payload, () => renderAuditLogs(Array.isArray(data.logs) ? data.logs : []));
 }
 
+async function handleVector(parsed) {
+  const subcommand = normalizeSubcommand(parsed, ["runtime", "status", "reindex"]);
+  if (subcommand === "runtime" || subcommand === "status") {
+    const payload = await requestApiJson(parsed, "GET", "/v1/admin/vector/search-runtime");
+    const data = unwrapEnvelope(payload);
+    printJsonOrSummary(parsed, payload, () => renderVectorRuntime(data));
+    return;
+  }
+  if (subcommand === "reindex") {
+    const mode = String(getFlag(parsed, "mode") || "always").trim().toLowerCase();
+    if (!["auto", "always", "force", "off", "disabled"].includes(mode)) {
+      throw new Error("vector reindex --mode must be auto, always, force, off, or disabled.");
+    }
+    const payload = await requestApiJson(parsed, "POST", "/v1/admin/vector/reindex", {
+      body: { mode }
+    });
+    const data = unwrapEnvelope(payload);
+    printJsonOrSummary(parsed, payload, () => renderVectorReindex(data, mode));
+    return;
+  }
+  throw new Error("vector requires a subcommand: runtime or reindex.");
+}
+
 async function handleMemories(parsed) {
   const subcommand = normalizeSubcommand(parsed, ["list", "get", "show", "create", "update", "delete", "status"]);
   const memoryId = maybeStringFlag(parsed, "id", "memory-id");
@@ -4439,6 +4501,10 @@ async function main() {
       return;
     case "audit":
       await handleAudit(parsed);
+      return;
+    case "vector":
+    case "vectors":
+      await handleVector(parsed);
       return;
     case "memories":
     case "memory":

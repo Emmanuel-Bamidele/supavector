@@ -151,6 +151,17 @@ class SupaVectorClient {
     return this.request("/v1/stats");
   }
 
+  async vectorRuntime() {
+    return this.request("/v1/admin/vector/search-runtime");
+  }
+
+  async vectorReindex(params = {}) {
+    return this.request("/v1/admin/vector/reindex", {
+      method: "POST",
+      body: params
+    });
+  }
+
   async getModels() {
     return this.request("/v1/models", { auth: false });
   }

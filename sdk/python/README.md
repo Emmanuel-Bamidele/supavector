@@ -133,6 +133,8 @@ client.login("admin", "change_me")
 - `health()`
 - `login(username, password)`
 - `stats()`
+- `vector_runtime()`
+- `vector_reindex(params=None)`
 - `get_models()`
 - `models()`
 - `list_docs(params=None)`
@@ -156,6 +158,8 @@ client.login("admin", "change_me")
 - `get_tenant_settings()`
 - `update_tenant_settings(data)`
 - `get_job(job_id)`
+
+`vector_runtime()` and `vector_reindex({"mode": "always"})` call admin-only endpoints for ANN rollout inspection and vector rebuilds. Use them with an admin-capable token.
 
 ## Environment Helper
 

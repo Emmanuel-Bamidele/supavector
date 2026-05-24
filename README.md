@@ -415,6 +415,12 @@ supavector boolean_ask --question "Does SupaVector store memory for agents?" --c
 
 `search`, `ask`, `code`, `boolean_ask`, and memory recall now use hybrid retrieval by default: dense vector search from the C++ store plus lexical full-text search from Postgres, fused with reciprocal rank fusion. This especially helps short identifiers, SKUs, error codes, and mixed natural-language-plus-identifier queries.
 
+Dense vector search defaults to exact scanning. Operators can enable the approximate side index with `VECTOR_ANN_ENABLED=1` and roll it out with `VECTOR_SEARCH_MODE=shadow` first, then `VECTOR_SEARCH_MODE=auto` once overlap and latency telemetry look good. In auto mode, small candidate sets stay exact and large candidate sets use ANN candidate generation plus exact rescoring before hybrid fusion.
+
+Production ANN rollout controls include `VECTOR_ANN_ROLLOUT_PERCENT` for gradual auto-mode exposure and a shadow-overlap circuit breaker through `VECTOR_ANN_MIN_SHADOW_OVERLAP`, `VECTOR_ANN_LOW_OVERLAP_LIMIT`, and `VECTOR_ANN_CIRCUIT_OPEN_MS`. Check `/v1/stats`, `/v1/metrics`, and `/v1/admin/vector/search-runtime` during rollout.
+
+The CLI exposes the same operator surface with `supavector vector runtime` and `supavector vector reindex --mode always`.
+
 The CLI now exposes the same first-class retrieval filters as the API. Use `--doc-ids`, `--namespace-ids`, `--tags`, `--agent-id`, `--source-type`, `--document-type`, `--since`, `--until`, `--time-field`, and `--favor-recency` on `search`, `ask`, `code`, and `boolean_ask` when retrieval scope matters.
 
 You can also ingest a whole folder of supported files. The CLI reads plain text files directly and extracts text from `.pdf` and `.docx` files before indexing. If you omit `--collection`, the folder name becomes the collection name:

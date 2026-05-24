@@ -155,6 +155,7 @@ static std::atomic<long long> g_vdel_count{0};            // VDEL commands
 static std::atomic<long long> g_vdel_prefix_count{0};     // VDELPREFIX commands
 static std::atomic<long long> g_vclear_count{0};          // VCLEAR commands
 static std::atomic<long long> g_vsearch_count{0};         // VSEARCH commands
+static std::atomic<long long> g_vsearch_ann_count{0};     // VSEARCHANN commands
 
 // Controls whether vector operations are written to WAL.
 // Default is off for the OSS profile; set VECTOR_WAL=1 to enable durability.
@@ -224,7 +225,13 @@ static std::string handle_command(
     json += "\"vdel_count\":" + std::to_string(g_vdel_count.load()) + ",";
     json += "\"vdel_prefix_count\":" + std::to_string(g_vdel_prefix_count.load()) + ",";
     json += "\"vclear_count\":" + std::to_string(g_vclear_count.load()) + ",";
-    json += "\"vsearch_count\":" + std::to_string(g_vsearch_count.load());
+    json += "\"vsearch_count\":" + std::to_string(g_vsearch_count.load()) + ",";
+    json += "\"vsearch_ann_count\":" + std::to_string(g_vsearch_ann_count.load()) + ",";
+    json += "\"ann_index_ready\":" + std::string(vdb.ann_index_size() == vdb.size() && vdb.size() > 0 ? "true" : "false") + ",";
+    json += "\"ann_index_vectors\":" + std::to_string(vdb.ann_index_size()) + ",";
+    json += "\"ann_bucket_count\":" + std::to_string(vdb.ann_bucket_count()) + ",";
+    json += "\"ann_table_count\":" + std::to_string(vdb.ann_table_count()) + ",";
+    json += "\"ann_bits_per_table\":" + std::to_string(vdb.ann_bits_per_table());
 
     json += "}";
 
@@ -341,13 +348,19 @@ static std::string handle_command(
 
     // Optional: keep dimensions consistent after first insert
     // VectorDB itself enforces "one dims" behavior by storing dims_
-    bool inserted = vdb.add_or_update(id, vec);
+    VectorDB::UpsertResult upsert_result = vdb.add_or_update(id, vec);
+    if (upsert_result == VectorDB::UpsertResult::InvalidVector) {
+      return "ERR bad vector\n";
+    }
+    if (upsert_result == VectorDB::UpsertResult::DimensionMismatch) {
+      return "ERR vector dimension mismatch\n";
+    }
 
     if (g_vector_wal_enabled) {
       wal.append_line(build_vset_wal_line(id, vec));
     }
 
-    return inserted ? "OK new\n" : "OK updated\n";
+    return upsert_result == VectorDB::UpsertResult::Inserted ? "OK new\n" : "OK updated\n";
   }
 
   // --------------------------------
@@ -487,6 +500,97 @@ static std::string handle_command(
     }
 
     auto results = vdb.search_subset(q, k, ids);
+
+    std::string out;
+    for (std::size_t i = 0; i < results.size(); ++i) {
+      out += results[i].first;
+      out += " ";
+      out += std::to_string(results[i].second);
+
+      if (i + 1 < results.size())
+        out += "|";
+    }
+
+    out += "\n";
+    return out;
+  }
+
+  // --------------------------------
+  // VSEARCHANN k dim q1 ... q_dim overfetch
+  //
+  // Uses the approximate side index to generate candidates, then exact-rescores
+  // those candidates before returning top-k.
+  // --------------------------------
+  if (cmd == "VSEARCHANN" && parts.size() >= 5) {
+
+    g_vsearch_ann_count.fetch_add(1);
+
+    int k = std::stoi(parts[1]);
+    int dim = std::stoi(parts[2]);
+
+    std::vector<float> q = parse_floats(parts, 3, dim);
+    if (q.empty()) return "ERR bad query vector\n";
+
+    std::size_t overfetch_idx = 3 + (std::size_t)dim;
+    int overfetch = 5;
+    if (parts.size() > overfetch_idx) {
+      overfetch = std::stoi(parts[overfetch_idx]);
+    }
+
+    auto results = vdb.search_ann(q, k, overfetch);
+
+    std::string out;
+    for (std::size_t i = 0; i < results.size(); ++i) {
+      out += results[i].first;
+      out += " ";
+      out += std::to_string(results[i].second);
+
+      if (i + 1 < results.size())
+        out += "|";
+    }
+
+    out += "\n";
+    return out;
+  }
+
+  // --------------------------------
+  // VSEARCHANNIN k dim q1 ... q_dim overfetch count id1 id2 ... id_count
+  //
+  // Approximate candidate generation constrained to an allowed id set, followed
+  // by exact rescoring of the approximate candidates.
+  // --------------------------------
+  if (cmd == "VSEARCHANNIN" && parts.size() >= 6) {
+
+    g_vsearch_ann_count.fetch_add(1);
+
+    int k = std::stoi(parts[1]);
+    int dim = std::stoi(parts[2]);
+
+    std::vector<float> q = parse_floats(parts, 3, dim);
+    if (q.empty()) return "ERR bad query vector\n";
+
+    std::size_t overfetch_idx = 3 + (std::size_t)dim;
+    if (parts.size() <= overfetch_idx) return "ERR missing overfetch\n";
+
+    int overfetch = std::stoi(parts[overfetch_idx]);
+    std::size_t count_idx = overfetch_idx + 1;
+    if (parts.size() <= count_idx) return "ERR missing id count\n";
+
+    int id_count = std::stoi(parts[count_idx]);
+    if (id_count < 0) return "ERR bad id count\n";
+
+    std::size_t ids_start = count_idx + 1;
+    if (parts.size() < ids_start + (std::size_t)id_count) {
+      return "ERR insufficient ids\n";
+    }
+
+    std::vector<std::string> ids;
+    ids.reserve((std::size_t)id_count);
+    for (int i = 0; i < id_count; ++i) {
+      ids.push_back(parts[ids_start + (std::size_t)i]);
+    }
+
+    auto results = vdb.search_ann_subset(q, k, overfetch, ids);
 
     std::string out;
     for (std::size_t i = 0; i < results.size(); ++i) {

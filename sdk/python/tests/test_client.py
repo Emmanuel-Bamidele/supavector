@@ -103,6 +103,23 @@ class ClientTests(unittest.TestCase):
         })
 
     @mock.patch("supavector.client.urllib_request.urlopen")
+    def test_vector_admin_helpers_call_expected_routes(self, urlopen):
+        urlopen.return_value = FakeResponse({"ok": True, "data": {"accepted": True}})
+        client = Client(base_url="http://localhost:3000", api_key="service-token")
+
+        client.vector_runtime()
+        runtime_req = urlopen.call_args.args[0]
+        self.assertEqual(runtime_req.get_method(), "GET")
+        self.assertEqual(runtime_req.full_url, "http://localhost:3000/v1/admin/vector/search-runtime")
+        self.assertEqual(runtime_req.headers["X-api-key"], "service-token")
+
+        client.vector_reindex({"mode": "always"})
+        reindex_req = urlopen.call_args.args[0]
+        self.assertEqual(reindex_req.get_method(), "POST")
+        self.assertEqual(reindex_req.full_url, "http://localhost:3000/v1/admin/vector/reindex")
+        self.assertEqual(json.loads(reindex_req.data.decode("utf-8")), {"mode": "always"})
+
+    @mock.patch("supavector.client.urllib_request.urlopen")
     def test_http_errors_raise_sdk_error_with_payload(self, urlopen):
         error_body = {
             "error": {

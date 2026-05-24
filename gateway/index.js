@@ -25,7 +25,7 @@ const {
   resolveMemoryFavorRecencyPreference,
   resolveMemoryKnowledgeType
 } = require("./retrieval_planner");
-const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVdel, buildVclear, parseVsearchReply } = require("./tcp");
+const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVsearchAnnIn, buildVdel, buildVclear, parseVsearchReply } = require("./tcp");
 
 const {
   saveChunks,
@@ -486,6 +486,8 @@ const MEMORY_COMPACT_COOLDOWN_HOURS = parseInt(process.env.MEMORY_COMPACT_COOLDO
 const MEMORY_SNAPSHOT_INTERVAL_MS = parseInt(process.env.TELEMETRY_SNAPSHOT_INTERVAL_MS || "300000", 10);
 const BILLING_STORAGE_INCLUDED_GB_MONTH = parseFloat(process.env.BILLING_STORAGE_INCLUDED_GB_MONTH || "0");
 let reindexStarted = false;
+let reindexRunning = false;
+let lastReindexState = null;
 let ttlSweepRunning = false;
 let storageBillingAccrualRunning = false;
 let jobSweepRunning = false;
@@ -510,6 +512,20 @@ const DEFAULT_COLLECTION = process.env.DEFAULT_COLLECTION || "default";
 const SELF_SERVICE_REGISTRATION_ROLES = Object.freeze(["admin", "indexer", "reader"]);
 const TENANT_SEARCH_MULTIPLIER = parseInt(process.env.TENANT_SEARCH_MULTIPLIER || "5", 10);
 const TENANT_SEARCH_CAP = parseInt(process.env.TENANT_SEARCH_CAP || "50", 10);
+function normalizeVectorSearchMode(value) {
+  const clean = String(value || "").trim().toLowerCase();
+  return ["exact", "ann", "auto", "shadow"].includes(clean) ? clean : "exact";
+}
+const VECTOR_SEARCH_MODE = normalizeVectorSearchMode(process.env.VECTOR_SEARCH_MODE || "exact");
+const VECTOR_ANN_ENABLED = parseEnvFlag(process.env.VECTOR_ANN_ENABLED, false);
+const VECTOR_ANN_MIN_CANDIDATES = parseInt(process.env.VECTOR_ANN_MIN_CANDIDATES || "5000", 10);
+const VECTOR_ANN_OVERFETCH = parseInt(process.env.VECTOR_ANN_OVERFETCH || "5", 10);
+const VECTOR_ANN_EXACT_RESCORE = parseEnvFlag(process.env.VECTOR_ANN_EXACT_RESCORE, true);
+const VECTOR_ANN_ROLLOUT_PERCENT = parseFloat(process.env.VECTOR_ANN_ROLLOUT_PERCENT || "100");
+const VECTOR_ANN_SHADOW_SAMPLE_RATE = parseFloat(process.env.VECTOR_ANN_SHADOW_SAMPLE_RATE || "1");
+const VECTOR_ANN_MIN_SHADOW_OVERLAP = parseFloat(process.env.VECTOR_ANN_MIN_SHADOW_OVERLAP || "0.8");
+const VECTOR_ANN_LOW_OVERLAP_LIMIT = parseInt(process.env.VECTOR_ANN_LOW_OVERLAP_LIMIT || "3", 10);
+const VECTOR_ANN_CIRCUIT_OPEN_MS = parseInt(process.env.VECTOR_ANN_CIRCUIT_OPEN_MS || "300000", 10);
 const CHUNK_STRATEGY = String(process.env.CHUNK_STRATEGY || "token").toLowerCase() === "char" ? "char" : "token";
 const CHUNK_MAX_CHARS = parseInt(process.env.CHUNK_MAX_CHARS || "900", 10);
 const CHUNK_MAX_TOKENS = parseInt(process.env.CHUNK_MAX_TOKENS || "220", 10);
@@ -804,6 +820,208 @@ function emitTelemetry(eventType, context = {}, payload = {}) {
     ...(context.source ? { source: context.source } : {}),
     ...payload
   });
+}
+
+function elapsedMsSince(start) {
+  return Number((Number(process.hrtime.bigint() - start) / 1e6).toFixed(2));
+}
+
+function computeTopKOverlap(left, right, k) {
+  const limit = Number.isFinite(k) && k > 0 ? Math.floor(k) : 5;
+  const leftIds = new Set((Array.isArray(left) ? left : []).slice(0, limit).map((item) => item.id));
+  const rightIds = (Array.isArray(right) ? right : []).slice(0, limit).map((item) => item.id);
+  if (!leftIds.size || !rightIds.length) return 0;
+  let overlap = 0;
+  for (const id of rightIds) {
+    if (leftIds.has(id)) overlap += 1;
+  }
+  return Number((overlap / Math.max(1, Math.min(limit, leftIds.size))).toFixed(4));
+}
+
+function makeMetricRing(capacity = 500) {
+  return { values: new Array(capacity), index: 0, size: 0 };
+}
+
+function recordMetricValue(ring, value) {
+  if (!ring || !Number.isFinite(value)) return;
+  ring.values[ring.index] = value;
+  ring.index = (ring.index + 1) % ring.values.length;
+  ring.size = Math.min(ring.size + 1, ring.values.length);
+}
+
+function summarizeMetricRing(ring) {
+  const values = [];
+  if (!ring) return { count: 0, avg: null, p50: null, p95: null, p99: null };
+  for (let i = 0; i < ring.size; i += 1) {
+    const index = (ring.index - ring.size + i + ring.values.length) % ring.values.length;
+    const value = ring.values[index];
+    if (Number.isFinite(value)) values.push(value);
+  }
+  values.sort((a, b) => a - b);
+  const percentile = (p) => {
+    if (!values.length) return null;
+    const index = Math.max(0, Math.min(values.length - 1, Math.ceil((p / 100) * values.length) - 1));
+    return values[index];
+  };
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return {
+    count: values.length,
+    avg: values.length ? Number((total / values.length).toFixed(4)) : null,
+    p50: percentile(50),
+    p95: percentile(95),
+    p99: percentile(99)
+  };
+}
+
+const vectorSearchRuntime = {
+  total: 0,
+  modes: {},
+  fallbacks: {},
+  denseMs: makeMetricRing(),
+  lexicalMs: makeMetricRing(),
+  fusionMs: makeMetricRing(),
+  scanned: makeMetricRing(),
+  shadowOverlap: makeMetricRing(),
+  shadowCount: 0,
+  lowShadowOverlapCount: 0,
+  annCircuitOpenedUntilMs: 0,
+  annCircuitOpenCount: 0,
+  lastLowOverlap: null,
+  lastSearch: null
+};
+
+let vectorHealthCache = {
+  expiresAt: 0,
+  snapshot: null
+};
+
+function incrementCounter(map, key) {
+  const cleanKey = String(key || "unknown");
+  map[cleanKey] = (map[cleanKey] || 0) + 1;
+}
+
+function clampPercent(value, fallback = 100) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, value));
+}
+
+function clampRate(value, fallback = 1) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
+}
+
+function hashStringToUnitInterval(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 10000) / 10000;
+}
+
+function shouldSampleByRate(key, rate) {
+  const cleanRate = clampRate(rate, 1);
+  if (cleanRate <= 0) return false;
+  if (cleanRate >= 1) return true;
+  return hashStringToUnitInterval(key) < cleanRate;
+}
+
+function shouldUseAnnForRollout(key) {
+  const percent = clampPercent(VECTOR_ANN_ROLLOUT_PERCENT, 100);
+  if (percent <= 0) return false;
+  if (percent >= 100) return true;
+  return hashStringToUnitInterval(key) < percent / 100;
+}
+
+function isAnnCircuitOpen(nowMs = Date.now()) {
+  return Number(vectorSearchRuntime.annCircuitOpenedUntilMs || 0) > nowMs;
+}
+
+function maybeOpenAnnCircuit(overlap, context = {}) {
+  const threshold = Number.isFinite(VECTOR_ANN_MIN_SHADOW_OVERLAP) ? VECTOR_ANN_MIN_SHADOW_OVERLAP : 0.8;
+  const limit = Number.isFinite(VECTOR_ANN_LOW_OVERLAP_LIMIT) && VECTOR_ANN_LOW_OVERLAP_LIMIT > 0 ? VECTOR_ANN_LOW_OVERLAP_LIMIT : 3;
+  if (!Number.isFinite(overlap)) return;
+  if (overlap >= threshold) {
+    vectorSearchRuntime.lowShadowOverlapCount = 0;
+    return;
+  }
+  vectorSearchRuntime.lowShadowOverlapCount += 1;
+  vectorSearchRuntime.lastLowOverlap = {
+    overlap,
+    threshold,
+    at: new Date().toISOString(),
+    requestId: context.requestId || null,
+    scannedCount: context.scannedCount || null
+  };
+  if (vectorSearchRuntime.lowShadowOverlapCount < limit) return;
+
+  const openMs = Number.isFinite(VECTOR_ANN_CIRCUIT_OPEN_MS) && VECTOR_ANN_CIRCUIT_OPEN_MS > 0
+    ? VECTOR_ANN_CIRCUIT_OPEN_MS
+    : 300000;
+  vectorSearchRuntime.annCircuitOpenedUntilMs = Date.now() + openMs;
+  vectorSearchRuntime.annCircuitOpenCount += 1;
+  vectorSearchRuntime.lowShadowOverlapCount = 0;
+  console.warn(`[search] ANN circuit opened for ${openMs}ms after low shadow overlap (${overlap} < ${threshold}).`);
+}
+
+function recordVectorSearchRuntime(payload = {}) {
+  vectorSearchRuntime.total += 1;
+  incrementCounter(vectorSearchRuntime.modes, payload.used_mode);
+  if (payload.fallback_reason) incrementCounter(vectorSearchRuntime.fallbacks, payload.fallback_reason);
+  recordMetricValue(vectorSearchRuntime.denseMs, Number(payload.dense_search_ms));
+  recordMetricValue(vectorSearchRuntime.lexicalMs, Number(payload.lexical_search_ms));
+  recordMetricValue(vectorSearchRuntime.fusionMs, Number(payload.fusion_ms));
+  recordMetricValue(vectorSearchRuntime.scanned, Number(payload.scanned_count));
+  if (Number.isFinite(payload.shadow_top_k_overlap)) {
+    vectorSearchRuntime.shadowCount += 1;
+    recordMetricValue(vectorSearchRuntime.shadowOverlap, Number(payload.shadow_top_k_overlap));
+  }
+  vectorSearchRuntime.lastSearch = {
+    at: new Date().toISOString(),
+    requestedMode: payload.requested_mode || null,
+    usedMode: payload.used_mode || null,
+    fallbackReason: payload.fallback_reason || null,
+    scannedCount: payload.scanned_count ?? null,
+    denseSearchMs: payload.dense_search_ms ?? null
+  };
+}
+
+function getVectorSearchRuntimeStats() {
+  return {
+    total: vectorSearchRuntime.total,
+    modes: { ...vectorSearchRuntime.modes },
+    fallbacks: { ...vectorSearchRuntime.fallbacks },
+    dense_search_ms: summarizeMetricRing(vectorSearchRuntime.denseMs),
+    lexical_search_ms: summarizeMetricRing(vectorSearchRuntime.lexicalMs),
+    fusion_ms: summarizeMetricRing(vectorSearchRuntime.fusionMs),
+    scanned_count: summarizeMetricRing(vectorSearchRuntime.scanned),
+    shadow: {
+      count: vectorSearchRuntime.shadowCount,
+      top_k_overlap: summarizeMetricRing(vectorSearchRuntime.shadowOverlap),
+      low_overlap_count: vectorSearchRuntime.lowShadowOverlapCount,
+      last_low_overlap: vectorSearchRuntime.lastLowOverlap
+    },
+    ann_circuit: {
+      open: isAnnCircuitOpen(),
+      opened_until_ms: vectorSearchRuntime.annCircuitOpenedUntilMs || null,
+      opened_until: vectorSearchRuntime.annCircuitOpenedUntilMs ? new Date(vectorSearchRuntime.annCircuitOpenedUntilMs).toISOString() : null,
+      open_count: vectorSearchRuntime.annCircuitOpenCount
+    },
+    config: {
+      mode: VECTOR_SEARCH_MODE,
+      enabled: VECTOR_ANN_ENABLED,
+      min_candidates: VECTOR_ANN_MIN_CANDIDATES,
+      overfetch: VECTOR_ANN_OVERFETCH,
+      exact_rescore: VECTOR_ANN_EXACT_RESCORE,
+      rollout_percent: clampPercent(VECTOR_ANN_ROLLOUT_PERCENT, 100),
+      shadow_sample_rate: clampRate(VECTOR_ANN_SHADOW_SAMPLE_RATE, 1),
+      min_shadow_overlap: VECTOR_ANN_MIN_SHADOW_OVERLAP,
+      low_overlap_limit: VECTOR_ANN_LOW_OVERLAP_LIMIT,
+      circuit_open_ms: VECTOR_ANN_CIRCUIT_OPEN_MS
+    },
+    last_search: vectorSearchRuntime.lastSearch
+  };
 }
 
 function emitLifecycleActionTelemetry(action, item, details = {}, context = {}) {
@@ -3788,6 +4006,22 @@ function emitPromLatencySummary(lines, summary, labels) {
   }
 }
 
+function emitPromVectorSearchMetrics(lines, stats) {
+  if (!stats) return;
+  pushPromMetric(lines, "supavector_vector_search_total", {}, stats.total || 0);
+  for (const [mode, count] of Object.entries(stats.modes || {})) {
+    pushPromMetric(lines, "supavector_vector_search_mode_total", { mode }, count);
+  }
+  for (const [reason, count] of Object.entries(stats.fallbacks || {})) {
+    pushPromMetric(lines, "supavector_vector_search_fallback_total", { reason }, count);
+  }
+  pushPromMetric(lines, "supavector_vector_search_dense_ms_p95", {}, stats.dense_search_ms?.p95);
+  pushPromMetric(lines, "supavector_vector_search_scanned_p95", {}, stats.scanned_count?.p95);
+  pushPromMetric(lines, "supavector_vector_search_shadow_overlap_avg", {}, stats.shadow?.top_k_overlap?.avg);
+  pushPromMetric(lines, "supavector_vector_search_ann_circuit_open", {}, stats.ann_circuit?.open ? 1 : 0);
+  pushPromMetric(lines, "supavector_vector_search_ann_circuit_open_total", {}, stats.ann_circuit?.open_count || 0);
+}
+
 function stableStringify(value) {
   if (value === null || value === undefined) return "null";
   if (typeof value !== "object") return JSON.stringify(value);
@@ -3952,8 +4186,49 @@ async function getVectorStats() {
   const stats = JSON.parse(reply);
   return {
     vectors: Number(stats.vectors || 0),
-    vectorDims: Number(stats.vector_dims || 0)
+    vectorDims: Number(stats.vector_dims || 0),
+    annIndexReady: stats.ann_index_ready === true,
+    annIndexVectors: Number(stats.ann_index_vectors || 0),
+    annBucketCount: Number(stats.ann_bucket_count || 0),
+    annTableCount: Number(stats.ann_table_count || 0),
+    annBitsPerTable: Number(stats.ann_bits_per_table || 0)
   };
+}
+
+async function getVectorHealthSnapshot() {
+  const now = Date.now();
+  if (vectorHealthCache.snapshot && vectorHealthCache.expiresAt > now) {
+    return vectorHealthCache.snapshot;
+  }
+  const reply = await sendCmd("STATS");
+  const stats = JSON.parse(reply);
+  const vectors = Number(stats.vectors || 0);
+  const annIndexVectors = Number(stats.ann_index_vectors || 0);
+  const annIndexReady = stats.ann_index_ready === true || (!VECTOR_ANN_ENABLED && annIndexVectors === 0);
+  const snapshot = {
+    ok: true,
+    vectors,
+    vectorDims: Number(stats.vector_dims || 0),
+    ann: {
+      enabled: VECTOR_ANN_ENABLED,
+      mode: VECTOR_SEARCH_MODE,
+      indexReady: annIndexReady,
+      indexVectors: annIndexVectors,
+      bucketCount: Number(stats.ann_bucket_count || 0),
+      tableCount: Number(stats.ann_table_count || 0),
+      bitsPerTable: Number(stats.ann_bits_per_table || 0),
+      circuitOpen: isAnnCircuitOpen(),
+      circuitOpenedUntil: vectorSearchRuntime.annCircuitOpenedUntilMs
+        ? new Date(vectorSearchRuntime.annCircuitOpenedUntilMs).toISOString()
+        : null
+    },
+    raw: stats
+  };
+  vectorHealthCache = {
+    expiresAt: now + 5000,
+    snapshot
+  };
+  return snapshot;
 }
 
 async function clearVectorStore() {
@@ -4004,18 +4279,31 @@ async function resolveExpectedEmbedVectorDim() {
   return Number.isFinite(dim) && dim > 0 ? dim : 0;
 }
 
-async function reindexAllChunks() {
-  const mode = normalizeReindexMode(REINDEX_MODE);
-  if (mode === "off") return;
+async function reindexAllChunks(options = {}) {
+  if (reindexRunning) {
+    throw new Error("reindex already running");
+  }
+  reindexRunning = true;
+  const startedAt = new Date().toISOString();
+  lastReindexState = { status: "running", startedAt, finishedAt: null, mode: options.mode || REINDEX_MODE, processed: 0, total: null, error: null };
+  try {
+  const mode = normalizeReindexMode(options.mode || REINDEX_MODE);
+  if (mode === "off") {
+    lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "disabled" };
+    return;
+  }
 
   if (!process.env.OPENAI_API_KEY) {
     console.warn("[reindex] OPENAI_API_KEY not set; skipping auto reindex.");
+    lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "missing_openai_api_key" };
     return;
   }
 
   const totalChunks = await countChunks();
+  lastReindexState.total = totalChunks;
   if (!totalChunks) {
     console.log("[reindex] No stored chunks found; skipping.");
+    lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "no_chunks" };
     return;
   }
 
@@ -4041,6 +4329,7 @@ async function reindexAllChunks() {
       });
       if (!decision.shouldReindex) {
         console.log(`[reindex] Vector store already has ${vectors} vectors with dim ${vectorDims}; skipping auto reindex.`);
+        lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "up_to_date" };
         return;
       }
       if (decision.reason === "dimension_mismatch") {
@@ -4078,6 +4367,7 @@ async function reindexAllChunks() {
       if (buffer.length >= batchSize) {
         await reindexChunkBatch(buffer);
         processed += buffer.length;
+        lastReindexState.processed = processed;
         buffer = [];
         if (processed % logEvery === 0 || processed >= totalChunks) {
           console.log(`[reindex] Progress ${processed}/${totalChunks} chunks`);
@@ -4093,9 +4383,22 @@ async function reindexAllChunks() {
   if (buffer.length) {
     await reindexChunkBatch(buffer);
     processed += buffer.length;
+    lastReindexState.processed = processed;
   }
 
   console.log(`[reindex] Completed: ${processed}/${totalChunks} chunks indexed.`);
+  lastReindexState = { ...lastReindexState, status: "completed", finishedAt: new Date().toISOString(), processed, total: totalChunks };
+  } catch (err) {
+    lastReindexState = {
+      ...lastReindexState,
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      error: String(err?.message || err)
+    };
+    throw err;
+  } finally {
+    reindexRunning = false;
+  }
 }
 
 function scheduleAutoReindex() {
@@ -5808,10 +6111,114 @@ async function searchChunks({
   const hasDocFilter = cleanDocIds.length > 0;
   const internalK = Math.min(topK * multiplier * (hasDocFilter ? 2 : 1), cap);
   const scopedK = Math.max(1, Math.min(internalK, vectorSearchScannedCount));
-  const cmd = buildVsearchIn(scopedK, qvec, candidateChunkIds);
-  const line = await sendCmd(cmd);
+  const annCandidateThreshold = Number.isFinite(VECTOR_ANN_MIN_CANDIDATES) && VECTOR_ANN_MIN_CANDIDATES > 0
+    ? VECTOR_ANN_MIN_CANDIDATES
+    : 5000;
+  const annOverfetch = Number.isFinite(VECTOR_ANN_OVERFETCH) && VECTOR_ANN_OVERFETCH > 0
+    ? VECTOR_ANN_OVERFETCH
+    : 5;
+  const exactVectorSearch = async () => parseVsearchReply(await sendCmd(buildVsearchIn(scopedK, qvec, candidateChunkIds)));
+  const annVectorSearch = async () => parseVsearchReply(await sendCmd(buildVsearchAnnIn(scopedK, qvec, candidateChunkIds, annOverfetch)));
+  const vectorSearchRequestedMode = VECTOR_ANN_ENABLED ? VECTOR_SEARCH_MODE : "exact";
+  const rolloutKey = `${telemetryContext.requestId || ""}:${tenantId}:${collection}:${query}`;
+  const annCircuitOpen = isAnnCircuitOpen();
+  const annRolloutIncluded = shouldUseAnnForRollout(rolloutKey);
+  let annReadiness = null;
+  if (VECTOR_ANN_ENABLED && VECTOR_SEARCH_MODE !== "exact" && vectorSearchScannedCount >= annCandidateThreshold) {
+    try {
+      const vectorHealth = await getVectorHealthSnapshot();
+      annReadiness = vectorHealth.ann || null;
+    } catch (err) {
+      annReadiness = {
+        indexReady: false,
+        error: String(err?.message || err)
+      };
+    }
+  }
+  const annIndexReady = !VECTOR_ANN_ENABLED
+    || VECTOR_SEARCH_MODE === "exact"
+    || vectorSearchScannedCount < annCandidateThreshold
+    || annReadiness?.indexReady === true;
+  const vectorSearchCanUseAnn = VECTOR_ANN_ENABLED
+    && VECTOR_SEARCH_MODE !== "exact"
+    && vectorSearchScannedCount >= annCandidateThreshold
+    && annIndexReady
+    && !annCircuitOpen
+    && annRolloutIncluded;
+  const denseSearchStarted = process.hrtime.bigint();
+  let denseMatches = [];
+  let vectorSearchModeUsed = "exact";
+  let vectorSearchFallbackReason = null;
+  let vectorSearchAnnResultCount = null;
+  let vectorSearchExactResultCount = null;
+  let vectorSearchShadowOverlap = null;
 
-  const denseMatches = parseVsearchReply(line);
+  if (!vectorSearchCanUseAnn) {
+    denseMatches = await exactVectorSearch();
+    vectorSearchExactResultCount = denseMatches.length;
+    if (VECTOR_ANN_ENABLED && VECTOR_SEARCH_MODE !== "exact") {
+      vectorSearchFallbackReason = annCircuitOpen
+        ? "ann_circuit_open"
+        : !annIndexReady
+          ? "ann_index_not_ready"
+          : !annRolloutIncluded
+            ? "ann_rollout_excluded"
+            : "below_min_candidates";
+    }
+  } else if (VECTOR_SEARCH_MODE === "shadow") {
+    denseMatches = await exactVectorSearch();
+    vectorSearchExactResultCount = denseMatches.length;
+    const shouldRunShadow = shouldSampleByRate(rolloutKey, VECTOR_ANN_SHADOW_SAMPLE_RATE);
+    if (!shouldRunShadow) {
+      vectorSearchFallbackReason = "shadow_sample_skipped";
+    } else {
+      try {
+        const annMatches = await annVectorSearch();
+        vectorSearchAnnResultCount = annMatches.length;
+        vectorSearchShadowOverlap = computeTopKOverlap(denseMatches, annMatches, topK);
+        maybeOpenAnnCircuit(vectorSearchShadowOverlap, {
+          requestId: telemetryContext.requestId,
+          scannedCount: vectorSearchScannedCount
+        });
+        emitTelemetry("vector_search_shadow", telemetryContext, {
+          requested_mode: vectorSearchRequestedMode,
+          used_mode: "exact",
+          scanned_count: vectorSearchScannedCount,
+          scoped_k: scopedK,
+          ann_result_count: vectorSearchAnnResultCount,
+          exact_result_count: vectorSearchExactResultCount,
+          top_k_overlap: vectorSearchShadowOverlap,
+          overfetch: annOverfetch,
+          exact_rescore: VECTOR_ANN_EXACT_RESCORE
+        });
+      } catch (err) {
+        vectorSearchFallbackReason = "shadow_ann_failed";
+        console.warn("[search] ANN shadow retrieval failed:", err?.message || err);
+      }
+    }
+  } else {
+    try {
+      const annMatches = await annVectorSearch();
+      vectorSearchAnnResultCount = annMatches.length;
+      const minimumUsefulAnnMatches = Math.min(scopedK, topK);
+      if (annMatches.length >= minimumUsefulAnnMatches) {
+        denseMatches = annMatches;
+        vectorSearchModeUsed = "ann";
+      } else {
+        vectorSearchFallbackReason = "ann_returned_too_few_candidates";
+        denseMatches = await exactVectorSearch();
+        vectorSearchExactResultCount = denseMatches.length;
+        vectorSearchModeUsed = "exact_fallback";
+      }
+    } catch (err) {
+      vectorSearchFallbackReason = "ann_failed";
+      console.warn("[search] ANN retrieval failed, falling back to exact:", err?.message || err);
+      denseMatches = await exactVectorSearch();
+      vectorSearchExactResultCount = denseMatches.length;
+      vectorSearchModeUsed = "exact_fallback";
+    }
+  }
+  const denseSearchMs = elapsedMsSince(denseSearchStarted);
   const docFilter = hasDocFilter ? new Set(cleanDocIds) : null;
   const namespacedDocIds = candidateNamespaceIds;
 
@@ -5824,6 +6231,8 @@ async function searchChunks({
   const lexicalK = Math.min(topK * lexicalMultiplier, lexicalCap);
 
   let lexicalRows = [];
+  const lexicalSearchStarted = process.hrtime.bigint();
+  let lexicalSearchMs = 0;
   if (HYBRID_RETRIEVAL_ENABLED && lexicalK > 0) {
     try {
       lexicalRows = await searchChunksLexical({
@@ -5837,6 +6246,7 @@ async function searchChunks({
       console.warn("[search] lexical retrieval failed:", err?.message || err);
     }
   }
+  lexicalSearchMs = elapsedMsSince(lexicalSearchStarted);
 
   const candidates = new Map();
   function addCandidate(row, vectorScore, lexicalScore, vectorRank, lexicalRank) {
@@ -5895,6 +6305,7 @@ async function searchChunks({
   }
 
   const useHybrid = HYBRID_RETRIEVAL_ENABLED;
+  const fusionStarted = process.hrtime.bigint();
   const ranked = rankSearchCandidates(Array.from(candidates.values()), {
     query,
     useHybrid,
@@ -5911,6 +6322,37 @@ async function searchChunks({
     determineRecencyBoostMode,
     computeMemoryRetrievalRecencyScore
   });
+  const fusionMs = elapsedMsSince(fusionStarted);
+
+  const vectorSearchPayload = {
+    requested_mode: vectorSearchRequestedMode,
+    used_mode: vectorSearchModeUsed,
+    fallback_reason: vectorSearchFallbackReason,
+    scanned_count: vectorSearchScannedCount,
+    vector_search_scanned_count: vectorSearchScannedCount,
+    scoped_k: scopedK,
+    top_k: topK,
+    ann_enabled: VECTOR_ANN_ENABLED,
+    ann_min_candidates: annCandidateThreshold,
+    ann_overfetch: annOverfetch,
+    ann_exact_rescore: VECTOR_ANN_EXACT_RESCORE,
+    ann_rollout_percent: clampPercent(VECTOR_ANN_ROLLOUT_PERCENT, 100),
+    ann_rollout_included: annRolloutIncluded,
+    ann_circuit_open: annCircuitOpen,
+    ann_index_ready: annIndexReady,
+    ann_index_vectors: annReadiness?.indexVectors ?? null,
+    ann_result_count: vectorSearchAnnResultCount,
+    exact_result_count: vectorSearchExactResultCount,
+    dense_result_count: denseMatches.length,
+    lexical_result_count: lexicalRows.length,
+    fused_candidate_count: candidates.size,
+    shadow_top_k_overlap: vectorSearchShadowOverlap,
+    dense_search_ms: denseSearchMs,
+    lexical_search_ms: lexicalSearchMs,
+    fusion_ms: fusionMs
+  };
+  recordVectorSearchRuntime(vectorSearchPayload);
+  emitTelemetry("vector_search", telemetryContext, vectorSearchPayload);
 
   const results = ranked.slice(0, topK).map((candidate) => ({
     chunkId: stripChunkNamespace(candidate.row.chunk_id),
@@ -10371,7 +10813,11 @@ function scheduleMemorySnapshots() {
 app.get("/health", async (req, res) => {
   try {
     const reply = await sendCmd("PING");
-    res.json({ ok: true, tcp: reply, tenantId: null, collection: null });
+    const vector = await getVectorHealthSnapshot().catch((err) => ({
+      ok: false,
+      error: String(err?.message || err)
+    }));
+    res.json({ ok: true, tcp: reply, vector, tenantId: null, collection: null });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e), tenantId: null, collection: null });
   }
@@ -10380,7 +10826,11 @@ app.get("/health", async (req, res) => {
 app.get("/v1/health", async (req, res) => {
   try {
     const reply = await sendCmd("PING");
-    sendOk(res, { status: "ok", tcp: reply }, null, null);
+    const vector = await getVectorHealthSnapshot().catch((err) => ({
+      ok: false,
+      error: String(err?.message || err)
+    }));
+    sendOk(res, { status: "ok", tcp: reply, vector }, null, null);
   } catch (e) {
     sendError(res, 500, e, "HEALTH_CHECK_FAILED", null, null);
   }
@@ -11938,6 +12388,51 @@ app.delete(["/admin/service-tokens/:id", "/v1/admin/service-tokens/:id"], requir
   }
 });
 
+app.get(["/admin/vector/search-runtime", "/v1/admin/vector/search-runtime"], requireJwt, requireAdmin, async (req, res) => {
+  let tenantId = null;
+  try {
+    tenantId = resolveTenantId(req);
+    const vector = await getVectorHealthSnapshot().catch((err) => ({
+      ok: false,
+      error: String(err?.message || err)
+    }));
+    sendOk(res, {
+      vector,
+      runtime: getVectorSearchRuntimeStats(),
+      reindex: {
+        running: reindexRunning,
+        last: lastReindexState
+      }
+    }, tenantId, null);
+  } catch (err) {
+    sendError(res, 500, "Failed to read vector search runtime", "VECTOR_RUNTIME_FAILED", tenantId, null);
+  }
+});
+
+app.post(["/admin/vector/reindex", "/v1/admin/vector/reindex"], requireJwt, requireAdmin, async (req, res) => {
+  let tenantId = null;
+  try {
+    tenantId = resolveTenantId(req);
+    if (reindexRunning) {
+      return sendError(res, 409, "Vector reindex is already running", "REINDEX_ALREADY_RUNNING", tenantId, null);
+    }
+    const mode = normalizeReindexMode(req.body?.mode || req.query?.mode || "always");
+    reindexAllChunks({ mode }).catch((err) => {
+      console.warn("[reindex] Admin-triggered reindex failed:", err?.message || err);
+    });
+    sendOk(res, {
+      accepted: true,
+      mode,
+      reindex: {
+        running: true,
+        last: lastReindexState
+      }
+    }, tenantId, null);
+  } catch (err) {
+    sendError(res, 500, "Failed to start vector reindex", "REINDEX_START_FAILED", tenantId, null);
+  }
+});
+
 // --------------------------
 // Stats (protected)
 // --------------------------
@@ -11947,7 +12442,12 @@ app.get("/stats", requireJwt, requireRole("reader"), async (req, res) => {
   const reply = await sendCmd("STATS");
   const tcpStats = JSON.parse(reply);
   const gatewayStats = {
-    latency: getLatencyStats(tenantId)
+    latency: getLatencyStats(tenantId),
+    vectorSearch: getVectorSearchRuntimeStats(),
+    reindex: {
+      running: reindexRunning,
+      last: lastReindexState
+    }
   };
   res.json({ ...tcpStats, gateway: gatewayStats, tenantId, collection });
 });
@@ -11961,7 +12461,12 @@ app.get("/v1/stats", requireJwt, requireRole("reader"), async (req, res) => {
     const reply = await sendCmd("STATS");
     const tcpStats = JSON.parse(reply);
     const gatewayStats = {
-      latency: getLatencyStats(tenantId)
+      latency: getLatencyStats(tenantId),
+      vectorSearch: getVectorSearchRuntimeStats(),
+      reindex: {
+        running: reindexRunning,
+        last: lastReindexState
+      }
     };
     sendOk(res, { ...tcpStats, gateway: gatewayStats }, tenantId, collection);
   } catch (e) {
@@ -11986,7 +12491,23 @@ const metricsHandler = async (req, res) => {
     "# HELP supavector_request_errors_total Error responses (>=500) observed in rolling window.",
     "# TYPE supavector_request_errors_total gauge",
     "# HELP supavector_request_error_rate Error rate observed in rolling window.",
-    "# TYPE supavector_request_error_rate gauge"
+    "# TYPE supavector_request_error_rate gauge",
+    "# HELP supavector_vector_search_total Dense vector searches observed by the gateway.",
+    "# TYPE supavector_vector_search_total counter",
+    "# HELP supavector_vector_search_mode_total Dense vector searches by selected mode.",
+    "# TYPE supavector_vector_search_mode_total counter",
+    "# HELP supavector_vector_search_fallback_total Dense vector search fallbacks by reason.",
+    "# TYPE supavector_vector_search_fallback_total counter",
+    "# HELP supavector_vector_search_dense_ms_p95 Dense vector search p95 latency in milliseconds.",
+    "# TYPE supavector_vector_search_dense_ms_p95 gauge",
+    "# HELP supavector_vector_search_scanned_p95 Dense vector candidate scanned count p95.",
+    "# TYPE supavector_vector_search_scanned_p95 gauge",
+    "# HELP supavector_vector_search_shadow_overlap_avg Average exact/ANN top-k overlap in shadow samples.",
+    "# TYPE supavector_vector_search_shadow_overlap_avg gauge",
+    "# HELP supavector_vector_search_ann_circuit_open Whether ANN automatic use is currently circuit-open.",
+    "# TYPE supavector_vector_search_ann_circuit_open gauge",
+    "# HELP supavector_vector_search_ann_circuit_open_total Count of ANN circuit-open events.",
+    "# TYPE supavector_vector_search_ann_circuit_open_total counter"
   ];
 
   const emitGroup = (group, baseLabels) => {
@@ -12004,6 +12525,7 @@ const metricsHandler = async (req, res) => {
   for (const [tid, stats] of Object.entries(tenantStats)) {
     emitGroup(stats, { tenant_id: tid });
   }
+  emitPromVectorSearchMetrics(lines, getVectorSearchRuntimeStats());
 
   res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
   res.send(`${lines.join("\n")}\n`);

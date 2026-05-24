@@ -548,6 +548,12 @@ class SupaVectorClient:
     def stats(self) -> Any:
         return self.request("/v1/stats")
 
+    def vector_runtime(self) -> Any:
+        return self.request("/v1/admin/vector/search-runtime")
+
+    def vector_reindex(self, params: Optional[Mapping[str, Any]] = None) -> Any:
+        return self.request("/v1/admin/vector/reindex", method="POST", body=dict(params or {}))
+
     def get_models(self) -> Any:
         return self.request("/v1/models", auth=False)
 
