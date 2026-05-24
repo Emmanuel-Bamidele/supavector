@@ -102,6 +102,8 @@ await client.login(process.env.SUPAVECTOR_USER, process.env.SUPAVECTOR_PASS);
 - `health()`
 - `login(username, password)`
 - `stats()`
+- `vectorRuntime()`
+- `vectorReindex(params)`
 - `listDocs(params)`
 - `indexText(docId, text, params)`
 - `indexUrl(docId, url, params)`
@@ -119,6 +121,8 @@ await client.login(process.env.SUPAVECTOR_USER, process.env.SUPAVECTOR_PASS);
 - `getTenantSettings()`
 - `updateTenantSettings(data)`
 - `getJob(id)`
+
+`vectorRuntime()` and `vectorReindex({ mode: "always" })` call admin-only endpoints for ANN rollout inspection and vector rebuilds. Use them with an admin-capable token.
 
 ## Tenant settings (admin)
 

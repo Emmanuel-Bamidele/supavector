@@ -1,6 +1,6 @@
 const assert = require("assert/strict");
 
-const { buildVdelPrefix, __testHooks } = require("../tcp");
+const { buildVdelPrefix, buildVsearchAnn, buildVsearchAnnIn, __testHooks } = require("../tcp");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,10 +43,17 @@ function testBuildVdelPrefix() {
   assert.equal(__testHooks.buildVdelPrefix("mem_1#"), "VDELPREFIX mem_1#");
 }
 
+function testBuildVsearchAnn() {
+  assert.equal(buildVsearchAnn(3, [0.1, 0.2], 9), "VSEARCHANN 3 2 0.1 0.2 9");
+  assert.equal(buildVsearchAnnIn(2, [0.4, 0.5], ["a#1", "b#2"], 7), "VSEARCHANNIN 2 2 0.4 0.5 7 2 a#1 b#2");
+  assert.equal(buildVsearchAnnIn(2, [0.4, 0.5], [], 7), "VSEARCHANNIN 2 2 0.4 0.5 7 0");
+}
+
 async function main() {
   testExtractReplyLinesWithRemainder();
   testExtractReplyLinesHandlesMultipleChunks();
   testBuildVdelPrefix();
+  testBuildVsearchAnn();
   await testInactivityTimerExtendsDeadlineOnProgress();
   console.log("tcp batch tests passed");
 }

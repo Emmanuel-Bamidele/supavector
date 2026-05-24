@@ -2128,8 +2128,13 @@ function renderStats(data){
   const vectors = Number(stats.vectors || 0);
   const vset = Number(stats.vset_count || 0);
   const vsearch = Number(stats.vsearch_count || 0);
+  const vsearchAnn = Number(stats.vsearch_ann_count || 0);
   const vdel = Number(stats.vdel_count || 0);
-  const vops = uptime > 0 ? (vset + vsearch + vdel) / uptime : 0;
+  const vops = uptime > 0 ? (vset + vsearch + vsearchAnn + vdel) / uptime : 0;
+  const vectorSearch = stats.gateway?.vectorSearch || {};
+  const annConfig = vectorSearch.config || {};
+  const shadowOverlapAvg = Number(vectorSearch.shadow?.top_k_overlap?.avg);
+  const circuitOpenedUntil = vectorSearch.ann_circuit?.opened_until;
 
   const cards = [
     {
@@ -2159,7 +2164,7 @@ function renderStats(data){
     },
     {
       label: "Vector ops",
-      value: formatNumber(vset + vsearch + vdel),
+      value: formatNumber(vset + vsearch + vsearchAnn + vdel),
       meta: `${formatRate(vops)} ops/sec`
     },
     {
@@ -2169,8 +2174,33 @@ function renderStats(data){
     },
     {
       label: "VSEARCH",
-      value: formatNumber(vsearch),
-      meta: "vector queries"
+      value: formatNumber(vsearch + vsearchAnn),
+      meta: `${formatNumber(vsearchAnn)} ANN`
+    },
+    {
+      label: "ANN index",
+      value: stats.ann_index_ready ? "Ready" : "Not ready",
+      meta: `${formatNumber(Number(stats.ann_index_vectors || 0))}/${formatNumber(vectors)} vectors`
+    },
+    {
+      label: "ANN mode",
+      value: annConfig.mode || "exact",
+      meta: annConfig.enabled ? `${formatNumber(Number(annConfig.rollout_percent || 0))}% rollout` : "disabled"
+    },
+    {
+      label: "ANN circuit",
+      value: vectorSearch.ann_circuit?.open ? "Open" : "Closed",
+      meta: circuitOpenedUntil || "normal"
+    },
+    {
+      label: "Dense p95",
+      value: formatMs(Number(vectorSearch.dense_search_ms?.p95)),
+      meta: `${formatNumber(Number(vectorSearch.scanned_count?.p95))} scanned p95`
+    },
+    {
+      label: "Shadow overlap",
+      value: Number.isFinite(shadowOverlapAvg) ? shadowOverlapAvg.toFixed(2) : "-",
+      meta: `${formatNumber(Number(vectorSearch.shadow?.count || 0))} samples`
     },
     {
       label: "Latency p50",

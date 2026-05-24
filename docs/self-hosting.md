@@ -167,6 +167,25 @@ HYBRID_RERANK_EXACT_BOOST=0.08
 
 Hybrid retrieval is on by default for search, ask, code, boolean_ask, and memory recall. `rrf` fuses dense vector rank from the vector store with lexical rank from Postgres full-text search. Set `HYBRID_RETRIEVAL_ENABLED=0` to keep vector-only ranking, or switch `HYBRID_FUSION_MODE=weighted` to use the legacy normalized score fusion.
 
+Dense vector search defaults to exact scanning. For larger stores, you can enable the approximate side index and roll it out without changing application requests:
+
+```env
+VECTOR_SEARCH_MODE=exact
+VECTOR_ANN_ENABLED=0
+VECTOR_ANN_MIN_CANDIDATES=5000
+VECTOR_ANN_OVERFETCH=5
+VECTOR_ANN_EXACT_RESCORE=1
+VECTOR_ANN_ROLLOUT_PERCENT=100
+VECTOR_ANN_SHADOW_SAMPLE_RATE=1
+VECTOR_ANN_MIN_SHADOW_OVERLAP=0.8
+VECTOR_ANN_LOW_OVERLAP_LIMIT=3
+VECTOR_ANN_CIRCUIT_OPEN_MS=300000
+VECTOR_ANN_LSH_TABLES=8
+VECTOR_ANN_LSH_BITS=12
+```
+
+Use `VECTOR_SEARCH_MODE=shadow` first to keep exact results while comparing ANN overlap and latency. Move to `VECTOR_SEARCH_MODE=auto` after `/v1/admin/vector/search-runtime`, `/v1/stats`, and `/v1/metrics` show acceptable overlap, fallback reasons, dense latency, and circuit state. Admins can trigger a vector rebuild with `POST /v1/admin/vector/reindex` or `supavector vector reindex --mode always`.
+
 For freshness-sensitive queries, you can also tune:
 
 ```env

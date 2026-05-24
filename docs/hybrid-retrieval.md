@@ -46,12 +46,47 @@ HYBRID_RERANK_OVERLAP_BOOST=0.12
 HYBRID_RERANK_EXACT_BOOST=0.08
 ```
 
+Dense vector search can also run with an approximate side index:
+
+```env
+VECTOR_SEARCH_MODE=exact
+VECTOR_ANN_ENABLED=0
+VECTOR_ANN_MIN_CANDIDATES=5000
+VECTOR_ANN_OVERFETCH=5
+VECTOR_ANN_EXACT_RESCORE=1
+VECTOR_ANN_ROLLOUT_PERCENT=100
+VECTOR_ANN_SHADOW_SAMPLE_RATE=1
+VECTOR_ANN_MIN_SHADOW_OVERLAP=0.8
+VECTOR_ANN_LOW_OVERLAP_LIMIT=3
+VECTOR_ANN_CIRCUIT_OPEN_MS=300000
+VECTOR_ANN_LSH_TABLES=8
+VECTOR_ANN_LSH_BITS=12
+```
+
 Operational meaning:
 
 - `HYBRID_RETRIEVAL_ENABLED=0` disables lexical retrieval and keeps vector-only ranking behavior.
 - `HYBRID_FUSION_MODE=rrf` is the default and is recommended for exact identifiers and mixed queries.
 - `HYBRID_FUSION_MODE=weighted` preserves the prior score-normalized hybrid fusion.
 - `HYBRID_RRF_K` controls how steeply reciprocal rank contributions decay.
+- `VECTOR_SEARCH_MODE=exact` keeps the original exact vector scan.
+- `VECTOR_SEARCH_MODE=shadow` returns exact results while emitting ANN/exact overlap telemetry.
+- `VECTOR_SEARCH_MODE=auto` uses ANN for large candidate sets and exact search for small or insufficient approximate results.
+- `VECTOR_ANN_ENABLED=1` enables the gateway to use the approximate side index.
+- `VECTOR_ANN_MIN_CANDIDATES` controls when ANN is considered worth using.
+- `VECTOR_ANN_OVERFETCH` controls how many approximate candidates are collected before exact rescoring.
+- `VECTOR_ANN_EXACT_RESCORE=1` documents the current behavior: approximate candidates are always exact-rescored before ranking.
+- `VECTOR_ANN_ROLLOUT_PERCENT` lets operators gradually enable auto-mode ANN by deterministic request sampling.
+- `VECTOR_ANN_SHADOW_SAMPLE_RATE` controls how often shadow mode runs ANN beside exact search.
+- `VECTOR_ANN_MIN_SHADOW_OVERLAP`, `VECTOR_ANN_LOW_OVERLAP_LIMIT`, and `VECTOR_ANN_CIRCUIT_OPEN_MS` open a temporary exact-only circuit breaker when shadow overlap drops repeatedly.
+
+Operational endpoints:
+
+- `/health` and `/v1/health` include vector ANN readiness and circuit state.
+- `/stats` and `/v1/stats` include gateway vector-search runtime summaries.
+- `/metrics` exposes Prometheus gauges/counters for vector search mode, fallback reason, p95 dense latency, p95 scanned candidates, shadow overlap, and ANN circuit state.
+- `POST /v1/admin/vector/reindex` starts an admin-triggered vector rebuild from stored chunks.
+- `GET /v1/admin/vector/search-runtime` returns the current ANN rollout, circuit, and reindex state.
 
 ## Backward Compatibility
 

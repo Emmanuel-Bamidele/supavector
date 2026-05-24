@@ -319,6 +319,8 @@ Add `"favorRecency": true` when newer matching evidence should rank ahead of old
 
 If you operate the server yourself, the main hybrid retrieval flags are `HYBRID_RETRIEVAL_ENABLED`, `HYBRID_FUSION_MODE`, `HYBRID_RRF_K`, `HYBRID_VECTOR_WEIGHT`, and `HYBRID_LEXICAL_WEIGHT`. `HYBRID_RETRIEVAL_ENABLED=0` keeps the prior vector-only behavior.
 
+Dense vector search defaults to exact scans. Operators can enable the ANN side index with `VECTOR_ANN_ENABLED=1`, observe it in `VECTOR_SEARCH_MODE=shadow`, and then use `VECTOR_SEARCH_MODE=auto` for large candidate sets once overlap and latency are acceptable. The admin runtime view is available at `GET /v1/admin/vector/search-runtime`, and the CLI equivalent is `supavector vector runtime`.
+
 If you operate the server yourself, `RETRIEVAL_QUERY_RECENCY_AUTO_ENABLED`, `MEMORY_RETRIEVAL_RECENCY_WEIGHT`, and `MEMORY_RETRIEVAL_RECENCY_HALFLIFE_DAYS` control automatic freshness-sensitive ranking. See [`retrieval-correctness.md`](retrieval-correctness.md) for the full filtering and evaluation workflow.
 
 ### Code

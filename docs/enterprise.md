@@ -103,6 +103,8 @@ Tenant admin APIs:
 - `GET/PATCH /v1/admin/tenant`
 - `GET/POST/PATCH /v1/admin/users`
 - `GET/POST/DELETE /v1/admin/service-tokens`
+- `GET /v1/admin/vector/search-runtime`
+- `POST /v1/admin/vector/reindex`
 
 Enterprise control APIs:
 
@@ -126,6 +128,7 @@ What they cover:
 - cross-tenant user and role management
 - cross-tenant machine-token issuance
 - audit-log access for enterprise operations
+- vector search runtime inspection, ANN rollout state, and admin-triggered vector rebuilds
 
 What is intentionally not exposed yet:
 
@@ -157,6 +160,24 @@ That creates:
 The normal tenant-scoped token routes cannot mint `instance_admin`. That role is only allowed through bootstrap or the enterprise control APIs.
 
 ## Enterprise API Examples
+
+Inspect dense vector search runtime:
+
+```bash
+curl -sS "$SUPAVECTOR_BASE_URL/v1/admin/vector/search-runtime" \
+  -H "Authorization: Bearer $SUPAVECTOR_JWT"
+```
+
+Trigger a vector rebuild from stored chunks after an embedding-model change or vector-store restore:
+
+```bash
+curl -sS "$SUPAVECTOR_BASE_URL/v1/admin/vector/reindex" \
+  -H "Authorization: Bearer $SUPAVECTOR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"always"}'
+```
+
+The CLI equivalents are `supavector vector runtime` and `supavector vector reindex --mode always`.
 
 List tenants:
 

@@ -218,6 +218,30 @@ function buildVsearchIn(k, vec, ids) {
   return `VSEARCHIN ${k} ${dim} ${floats} ${cleanIds.length} ${cleanIds.join(" ")}`;
 }
 
+function buildVsearchAnn(k, vec, overfetch = 5) {
+  const dim = vec.length;
+  const floats = vec.map(x => x.toString()).join(" ");
+  const cleanOverfetch = Number.isFinite(Number(overfetch)) && Number(overfetch) > 0
+    ? Math.floor(Number(overfetch))
+    : 5;
+  return `VSEARCHANN ${k} ${dim} ${floats} ${cleanOverfetch}`;
+}
+
+function buildVsearchAnnIn(k, vec, ids, overfetch = 5) {
+  const dim = vec.length;
+  const floats = vec.map(x => x.toString()).join(" ");
+  const cleanOverfetch = Number.isFinite(Number(overfetch)) && Number(overfetch) > 0
+    ? Math.floor(Number(overfetch))
+    : 5;
+  const cleanIds = Array.isArray(ids)
+    ? ids.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  if (!cleanIds.length) {
+    return `VSEARCHANNIN ${k} ${dim} ${floats} ${cleanOverfetch} 0`;
+  }
+  return `VSEARCHANNIN ${k} ${dim} ${floats} ${cleanOverfetch} ${cleanIds.length} ${cleanIds.join(" ")}`;
+}
+
 // Build a VDEL command string
 function buildVdel(id) {
   return `VDEL ${id}`;
@@ -263,6 +287,8 @@ module.exports = {
   buildVset,
   buildVsearch,
   buildVsearchIn,
+  buildVsearchAnn,
+  buildVsearchAnnIn,
   buildVdel,
   buildVdelPrefix,
   buildVclear,
