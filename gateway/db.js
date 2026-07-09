@@ -3303,6 +3303,35 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Shared with supavector-portal/plugins/index.js. The gateway and the portal plugin apply
+// their DDL scripts concurrently on separate pool connections; without a common lock they
+// take AccessExclusiveLock on overlapping relations in opposite order and deadlock (40P01).
+// Both sides MUST use this exact key.
+const MIGRATION_ADVISORY_LOCK_KEY = "4344282031982157";
+const MIGRATION_DEADLOCK_ATTEMPTS = 3;
+
+// pg_advisory_lock is session-scoped, so the lock must be held on the same connection that
+// runs the DDL. pool.query() would hand each statement a different pooled connection.
+async function runSqlWithMigrationLock(sql) {
+  if (typeof pool.connect !== "function") {
+    await pool.query(sql);
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_ADVISORY_LOCK_KEY]);
+    try {
+      await client.query(sql);
+    } finally {
+      await client
+        .query("SELECT pg_advisory_unlock($1)", [MIGRATION_ADVISORY_LOCK_KEY])
+        .catch(() => {});
+    }
+  } finally {
+    client.release();
+  }
+}
+
 async function runMigrations() {
   if (process.env.MIGRATIONS_AUTO === "0") return;
 
@@ -3321,7 +3350,15 @@ async function runMigrations() {
 
   const sqlPath = path.join(__dirname, "schema.sql");
   const sql = fs.readFileSync(sqlPath, "utf8");
-  await pool.query(sql);
+  for (let attempt = 1; attempt <= MIGRATION_DEADLOCK_ATTEMPTS; attempt += 1) {
+    try {
+      await runSqlWithMigrationLock(sql);
+      return;
+    } catch (err) {
+      if (err?.code !== "40P01" || attempt === MIGRATION_DEADLOCK_ATTEMPTS) throw err;
+      await sleep(delayMs);
+    }
+  }
 }
 
 module.exports = {

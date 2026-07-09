@@ -345,11 +345,20 @@ public:
     float qnorm = norm(query);
     if (qnorm == 0.0f) return {};
 
-    const int clean_overfetch = overfetch > 0 ? overfetch : 5;
-    const int candidate_limit = std::max(k, k * clean_overfetch);
+    const std::size_t clean_k = k > 0 ? (std::size_t)k : 0;
+    if (clean_k == 0) return {};
+    const std::size_t clean_overfetch = overfetch > 0 ? (std::size_t)overfetch : 5;
+    const std::size_t max_candidates = vectors_.size();
+    const std::size_t overfetch_limit = clean_overfetch > max_candidates / clean_k
+      ? max_candidates
+      : clean_k * clean_overfetch;
+    const std::size_t candidate_limit = std::min(
+      max_candidates,
+      std::max(clean_k, overfetch_limit)
+    );
     std::unordered_set<std::string> seen;
     std::vector<std::string> candidate_ids;
-    candidate_ids.reserve((std::size_t)std::max(candidate_limit, k));
+    candidate_ids.reserve(candidate_limit);
 
     for (int table_index = 0; table_index < (int)ann_tables_.size(); ++table_index) {
       const std::uint64_t signature = ann_signature_locked(query, table_index);
@@ -358,10 +367,10 @@ public:
       for (const auto& id : bucket->second) {
         if (seen.insert(id).second) {
           candidate_ids.push_back(id);
-          if ((int)candidate_ids.size() >= candidate_limit) break;
+          if (candidate_ids.size() >= candidate_limit) break;
         }
       }
-      if ((int)candidate_ids.size() >= candidate_limit) break;
+      if (candidate_ids.size() >= candidate_limit) break;
     }
 
     if (candidate_ids.empty()) return {};
@@ -379,7 +388,6 @@ public:
     }
 
     if (scores.empty()) return {};
-    if (k < 0) k = 0;
     if ((std::size_t)k > scores.size()) k = (int)scores.size();
 
     std::partial_sort(
@@ -409,11 +417,20 @@ public:
     if (qnorm == 0.0f) return {};
 
     std::unordered_set<std::string> allowed(ids.begin(), ids.end());
-    const int clean_overfetch = overfetch > 0 ? overfetch : 5;
-    const int candidate_limit = std::max(k, k * clean_overfetch);
+    const std::size_t clean_k = k > 0 ? (std::size_t)k : 0;
+    if (clean_k == 0) return {};
+    const std::size_t clean_overfetch = overfetch > 0 ? (std::size_t)overfetch : 5;
+    const std::size_t max_candidates = allowed.size();
+    const std::size_t overfetch_limit = clean_overfetch > max_candidates / clean_k
+      ? max_candidates
+      : clean_k * clean_overfetch;
+    const std::size_t candidate_limit = std::min(
+      max_candidates,
+      std::max(clean_k, overfetch_limit)
+    );
     std::unordered_set<std::string> seen;
     std::vector<std::string> candidate_ids;
-    candidate_ids.reserve((std::size_t)std::max(candidate_limit, k));
+    candidate_ids.reserve(candidate_limit);
 
     for (int table_index = 0; table_index < (int)ann_tables_.size(); ++table_index) {
       const std::uint64_t signature = ann_signature_locked(query, table_index);
@@ -423,10 +440,10 @@ public:
         if (allowed.find(id) == allowed.end()) continue;
         if (seen.insert(id).second) {
           candidate_ids.push_back(id);
-          if ((int)candidate_ids.size() >= candidate_limit) break;
+          if (candidate_ids.size() >= candidate_limit) break;
         }
       }
-      if ((int)candidate_ids.size() >= candidate_limit) break;
+      if (candidate_ids.size() >= candidate_limit) break;
     }
 
     if (candidate_ids.empty()) return {};
@@ -444,7 +461,6 @@ public:
     }
 
     if (scores.empty()) return {};
-    if (k < 0) k = 0;
     if ((std::size_t)k > scores.size()) k = (int)scores.size();
 
     std::partial_sort(
