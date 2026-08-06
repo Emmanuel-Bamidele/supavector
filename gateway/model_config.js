@@ -62,6 +62,9 @@ function resolveEnvModelDefaults(env = process.env) {
 }
 
 function extractTenantModelOverrides(record = {}) {
+  // A tenant lookup that found no row passes an explicit null, which a
+  // default parameter does not replace — treat it as "no overrides".
+  record = record || {};
   return {
     answerProvider: normalizeProviderId(record.answer_provider ?? record.answerProvider),
     answerModel: normalizeModelId(record.answer_model ?? record.answerModel),

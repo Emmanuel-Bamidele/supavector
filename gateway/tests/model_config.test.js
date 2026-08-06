@@ -65,6 +65,22 @@ function testTenantModelInheritance() {
   assert.equal(resolved.effective.embedModel, "text-embedding-3-large");
 }
 
+function testMissingTenantRecordUsesInstanceDefaults() {
+  const resolved = resolveTenantModelSettings(null, {
+    ANSWER_PROVIDER: "gemini",
+    ANSWER_MODEL: "gemini-2.5-flash",
+    EMBED_PROVIDER: "openai",
+    EMBED_MODEL: "text-embedding-3-small",
+    REFLECT_PROVIDER: "anthropic",
+    REFLECT_MODEL: "claude-sonnet-4-20250514"
+  });
+
+  assert.equal(resolved.effective.answerProvider, "gemini");
+  assert.equal(resolved.effective.answerModel, "gemini-2.5-flash");
+  assert.equal(resolved.effective.embedProvider, "openai");
+  assert.equal(resolved.effective.reflectProvider, "anthropic");
+}
+
 function testEmbedFallbackStaysCompatible() {
   const resolved = resolveEnvModelDefaults({
     ANSWER_PROVIDER: "",
@@ -206,6 +222,7 @@ function testEmbedAndReflectResolvers() {
 function main() {
   testEmbedFallbackStaysCompatible();
   testTenantModelInheritance();
+  testMissingTenantRecordUsesInstanceDefaults();
   testTenantModelInputParsing();
   testAnswerModelResolvers();
   testResponsesCompatibility();

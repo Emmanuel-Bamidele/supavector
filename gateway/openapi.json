@@ -931,6 +931,36 @@
             "type": "boolean",
             "description": "When true, retrieval adds a freshness bias so newer matching memories rank higher."
           },
+          "history": {
+            "type": "array",
+            "maxItems": 160,
+            "description": "Optional recent conversation turns, oldest first. Used only for answer generation; retrieval still uses the standalone question, and only the newest 12 turns are included in the generation prompt.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "required": [
+                "role",
+                "text"
+              ]
+            }
+          },
+          "background": {
+            "type": "string",
+            "maxLength": 600,
+            "description": "Optional request-local background facts used only for answer generation."
+          },
           "collection": {
             "type": "string"
           },
@@ -3148,7 +3178,7 @@
             }
           }
         },
-        "description": "Retrieve relevant chunks and generate a grounded answer with citations. `provider` and `model` can override the tenant or instance generation defaults for this request. Retrieval still uses the instance-wide embedding provider/model, and supports first-class filters plus freshness-aware time windows."
+        "description": "Retrieve relevant chunks and generate a grounded answer with citations. `history` and `background` are optional generation-only context; retrieval continues to use the standalone question. `provider` and `model` can override the tenant or instance generation defaults for this request. Retrieval still uses the instance-wide embedding provider/model, and supports first-class filters plus freshness-aware time windows."
       }
     },
     "/v1/code": {

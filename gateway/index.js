@@ -4655,6 +4655,44 @@ function parseQuestionInput(input = {}) {
   return String(input?.question ?? input?.query ?? input?.q ?? "").trim();
 }
 
+/* Conversation context for /v1/ask. Both are optional and generation-only:
+   they never touch retrieval, so the sources are still found by the bare
+   question and the latest ask keeps the last word in the prompt. */
+function parseAskBackgroundInput(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string") throw new Error("background must be a string");
+  const clean = raw.trim();
+  if (!clean) return null;
+  if (clean.length > 600) throw new Error("background must be 600 characters or fewer");
+  return clean;
+}
+
+function parseAskHistoryInput(raw) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new Error("history must be an array of {role, text} turns");
+  // The portal's established public envelope accepts up to 160 transient
+  // turns. Preserve that request compatibility, but keep the model prompt
+  // bounded to the newest 12 turns.
+  if (raw.length > 160) throw new Error("history may include at most 160 turns");
+  const turns = [];
+  for (const item of raw.slice(-12)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("history turns must be objects with role and text");
+    }
+    const role = String(item.role || "").trim().toLowerCase();
+    if (role !== "user" && role !== "assistant") {
+      throw new Error("history roles must be user or assistant");
+    }
+    if (typeof item.text !== "string") {
+      throw new Error("history turn text must be a string");
+    }
+    const text = item.text.trim();
+    if (!text) continue;
+    turns.push({ role, text: text.slice(0, 2000) });
+  }
+  return turns;
+}
+
 function parseOptionalBooleanFlag(raw, label = "value") {
   if (raw === undefined || raw === null || raw === "") return null;
   if (raw === true || raw === false) return raw;
@@ -7304,7 +7342,10 @@ async function buildAnswerContext({
       ...result._row,
       _retrieval_score: result.score,
       memory_id: memory?.id || null,
-      memory_type: memory?.item_type || null
+      memory_type: memory?.item_type || null,
+      title: memory?.title || null,
+      source_created_at: memory?.created_at || null,
+      source_updated_at: memory?.metadata?.updated_at || memory?.metadata?.updatedAt || null
     };
   }).filter(Boolean);
 
@@ -7652,6 +7693,8 @@ async function answerQuestion({
   privileges,
   answerLength,
   citationMode = "inline",
+  history,
+  background,
   telemetry,
   policy,
   favorRecency,
@@ -7713,6 +7756,8 @@ async function answerQuestion({
     model: requestedAnswerConfig.model,
     answerLength,
     citationMode,
+    history,
+    background,
     onPromptBuilt: (promptStats) => {
       const memoryIds = [];
       const seen = new Set();
@@ -13329,6 +13374,15 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
     return sendError(res, 400, "citationMode must be one of: inline, metadata", "INVALID_INPUT", null, null);
   }
 
+  let history = [];
+  let background = null;
+  try {
+    history = parseAskHistoryInput(req.body?.history);
+    background = parseAskBackgroundInput(req.body?.background);
+  } catch (e) {
+    return sendError(res, 400, e.message, "INVALID_INPUT", null, null);
+  }
+
   let tenantId = null;
   let collection = null;
   try {
@@ -13359,6 +13413,8 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       privileges: access.privileges,
       answerLength,
       citationMode,
+      history,
+      background,
       policy,
       favorRecency,
       tags: retrievalFilters.tags,
@@ -15141,6 +15197,29 @@ app.get("/v1/jobs/:id", requireJwt, requireRole("reader"), async (req, res) => {
   }
 });
 
+// Unmatched /v1 requests used to fall through to Express's default handler,
+// which returns an HTML body with no JSON. A client that always parses the
+// response then throws on the parse instead of surfacing a useful message --
+// the common case being a correct path called with the wrong method (for
+// example POST to /v1/memories/:id/search, which is GET-only).
+//
+// Registered after every route above, so it only ever sees genuine misses.
+function handleV1RouteNotFound(req, res, next) {
+  // Preserve Express's automatic OPTIONS response for callers that use it to
+  // discover the methods supported by a route.
+  if (req.method === "OPTIONS") return next();
+  return sendError(
+    res,
+    404,
+    `No ${req.method} handler for ${String(req.originalUrl || "").split("?")[0]}. Check the method and path against the API reference.`,
+    "ROUTE_NOT_FOUND",
+    null,
+    null
+  );
+}
+
+app.use("/v1", handleV1RouteNotFound);
+
 async function start() {
   try {
     await runMigrations();
@@ -15186,6 +15265,9 @@ module.exports = {
     normalizeRuntimeRoleList,
     normalizeTenantIdentifier,
     parseTenantMetadataInput,
+    parseAskBackgroundInput,
+    parseAskHistoryInput,
+    handleV1RouteNotFound,
     buildPublicRegistrationProjectName,
     slugifyPublicRegistrationProjectBase,
     buildPublicRegistrationTenantId,
