@@ -59,13 +59,30 @@ function hashApiKey(raw) {
   return crypto.createHash("sha256").update(String(raw)).digest("hex");
 }
 
+// Every service token is minted with this prefix (see the token-creation paths
+// in index.js and the portal plugin). JWTs never carry it, so seeing it after
+// "Bearer" is an unambiguous signal that the caller sent an API key.
+const SERVICE_TOKEN_PREFIX = "supav_";
+
 function extractApiKey(req) {
   const headerKey = req.header("x-api-key");
   if (headerKey) return String(headerKey).trim();
 
-  const auth = req.header("authorization") || "";
-  const [scheme, token] = auth.split(" ");
-  if (scheme && scheme.toLowerCase() === "apikey" && token) {
+  const auth = String(req.header("authorization") || "").trim();
+  const match = auth.match(/^(apikey|bearer)\s+(\S+)$/i);
+  if (!match) return null;
+  const [, scheme, token] = match;
+
+  const normalizedScheme = scheme.toLowerCase();
+  if (normalizedScheme === "apikey") {
+    return String(token).trim();
+  }
+  // Accept "Bearer <service token>" too. Bearer is what most developers reach
+  // for by default, and previously it fell through to JWT verification, which
+  // cannot parse a service token -- producing a bare 401 "Invalid token" that
+  // gave no hint the scheme was the problem. Gated on the prefix so genuine
+  // Bearer JWTs still take the JWT path untouched.
+  if (normalizedScheme === "bearer" && String(token).trim().startsWith(SERVICE_TOKEN_PREFIX)) {
     return String(token).trim();
   }
   return null;
@@ -191,4 +208,4 @@ const loginLimiter = rateLimit({
   handler: (req, res) => sendRateLimitError(res, req)
 });
 
-module.exports = { requireJwt, limiter, loginLimiter };
+module.exports = { requireJwt, limiter, loginLimiter, __testHooks: { extractApiKey, SERVICE_TOKEN_PREFIX } };

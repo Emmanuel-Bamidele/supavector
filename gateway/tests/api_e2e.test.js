@@ -129,7 +129,9 @@ async function deleteDocWithAdmin(adminJwt, docId) {
     assert.strictEqual(indexedCodeData.docId, codeDocId, "indexed code doc id mismatch");
 
     const searched = await requestJson("GET", "/v1/search", {
-      headers: apiKey(svcToken),
+      // Hosted and self-hosted service tokens must work with the conventional
+      // Bearer scheme as well as X-API-Key.
+      headers: bearer(svcToken),
       query: { q: `${marker} ${contactName}`, k: 5, docIds: docId }
     });
     assertStatus(searched, 200, "/v1/search");
@@ -145,7 +147,12 @@ async function deleteDocWithAdmin(adminJwt, docId) {
       body: {
         question: "Who is the primary contact in the indexed e2e document?",
         k: 4,
-        docIds: [docId]
+        docIds: [docId],
+        history: [
+          { role: "user", text: "I am checking the indexed CI document." },
+          { role: "assistant", text: "What would you like to verify?" }
+        ],
+        background: "Current date for this test request: August 5, 2026."
       }
     });
     assertStatus(asked, 200, "/v1/ask");
@@ -158,6 +165,14 @@ async function deleteDocWithAdmin(adminJwt, docId) {
       assert.match(askedData.answer, GENERATION_UNAVAILABLE_RE, "ask should fail closed when no generation provider is configured");
       assert.deepStrictEqual(askedData.citations, [], "ask should not fabricate citations when generation is unavailable");
     }
+
+    const missingRoute = await requestJson("POST", "/v1/not-a-real-route", {
+      headers: apiKey(svcToken),
+      body: {}
+    });
+    assertStatus(missingRoute, 404, "unmatched /v1 route");
+    assert.strictEqual(missingRoute.json?.ok, false, "unmatched /v1 route should return the v1 JSON envelope");
+    assert.strictEqual(missingRoute.json?.error?.code, "ROUTE_NOT_FOUND");
 
     const coded = await requestJson("POST", "/v1/code", {
       headers: apiKey(svcToken),
