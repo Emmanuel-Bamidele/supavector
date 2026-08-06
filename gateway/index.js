@@ -7682,6 +7682,15 @@ function mapSupportingChunks(chunks) {
   }).filter((chunk) => chunk.chunkId || chunk.text);
 }
 
+function parseAskGroundingInput(value) {
+  if (value === undefined || value === null || value === "") return "strict";
+  const clean = String(value).trim().toLowerCase();
+  if (clean === "strict" || clean === "extended") return clean;
+  const err = new Error('grounding must be "strict" or "extended"');
+  err.code = "INVALID_INPUT";
+  throw err;
+}
+
 async function answerQuestion({
   tenantId,
   collection,
@@ -7693,6 +7702,7 @@ async function answerQuestion({
   privileges,
   answerLength,
   citationMode = "inline",
+  grounding = "strict",
   history,
   background,
   telemetry,
@@ -7756,6 +7766,7 @@ async function answerQuestion({
     model: requestedAnswerConfig.model,
     answerLength,
     citationMode,
+    grounding,
     history,
     background,
     onPromptBuilt: (promptStats) => {
@@ -13376,9 +13387,11 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
 
   let history = [];
   let background = null;
+  let grounding = "strict";
   try {
     history = parseAskHistoryInput(req.body?.history);
     background = parseAskBackgroundInput(req.body?.background);
+    grounding = parseAskGroundingInput(req.body?.grounding);
   } catch (e) {
     return sendError(res, 400, e.message, "INVALID_INPUT", null, null);
   }
@@ -13413,6 +13426,7 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       privileges: access.privileges,
       answerLength,
       citationMode,
+      grounding,
       history,
       background,
       policy,
