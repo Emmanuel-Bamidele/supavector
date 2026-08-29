@@ -4667,6 +4667,18 @@ function parseAskBackgroundInput(raw) {
   return clean;
 }
 
+/* The agent's own voice: owner-written instructions plus tone. Generation-
+   only, exactly like background — retrieval still runs on the bare question.
+   Absent on older callers, so the neutral-assistant prompt stays the default. */
+function parseAskPersonaInput(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string") throw new Error("persona must be a string");
+  const clean = raw.trim();
+  if (!clean) return null;
+  if (clean.length > 4000) throw new Error("persona must be 4000 characters or fewer");
+  return clean;
+}
+
 function parseAskHistoryInput(raw) {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new Error("history must be an array of {role, text} turns");
@@ -7705,6 +7717,7 @@ async function answerQuestion({
   grounding = "strict",
   history,
   background,
+  persona,
   telemetry,
   policy,
   favorRecency,
@@ -7769,6 +7782,7 @@ async function answerQuestion({
     grounding,
     history,
     background,
+    persona,
     onPromptBuilt: (promptStats) => {
       const memoryIds = [];
       const seen = new Set();
@@ -13387,10 +13401,12 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
 
   let history = [];
   let background = null;
+  let persona = null;
   let grounding = "strict";
   try {
     history = parseAskHistoryInput(req.body?.history);
     background = parseAskBackgroundInput(req.body?.background);
+    persona = parseAskPersonaInput(req.body?.persona);
     grounding = parseAskGroundingInput(req.body?.grounding);
   } catch (e) {
     return sendError(res, 400, e.message, "INVALID_INPUT", null, null);
@@ -13429,6 +13445,7 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       grounding,
       history,
       background,
+      persona,
       policy,
       favorRecency,
       tags: retrievalFilters.tags,
