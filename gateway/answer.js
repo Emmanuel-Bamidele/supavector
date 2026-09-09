@@ -23,6 +23,11 @@ const CITATION_RESPONSE_MODES = new Set(["inline", "metadata"]);
 const BOOLEAN_ASK_ANSWERS = new Set(["true", "false", "invalid"]);
 const CODE_TASKS = new Set(["general", "understand", "debug", "review", "write", "improve", "structure"]);
 const CANONICAL_UNKNOWN_ANSWER = "I don't know based on the provided sources.";
+// A persona never sees the canonical string: naming "the provided sources"
+// breaks character in exactly the place a visitor notices, and this path skips
+// the model entirely, so no prompt rule can soften it. Callers that send no
+// persona keep the documented sentinel.
+const PERSONA_UNKNOWN_ANSWER = "I don't have that in what I know.";
 const GENERATION_UNAVAILABLE_ANSWER = "I couldn't generate a grounded answer right now because answer generation is unavailable.";
 const FALLBACK_STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
@@ -385,9 +390,9 @@ function buildEstimatedUsage(inputText, outputText) {
   };
 }
 
-function buildUnknownAnswerResult({ answerLength, selectedChunks = [] } = {}) {
+function buildUnknownAnswerResult({ answerLength, selectedChunks = [], persona = false } = {}) {
   return {
-    answer: CANONICAL_UNKNOWN_ANSWER,
+    answer: persona ? PERSONA_UNKNOWN_ANSWER : CANONICAL_UNKNOWN_ANSWER,
     citations: [],
     ...(answerLength ? { answerLength } : {}),
     selectedChunks
@@ -703,14 +708,21 @@ function buildPrompt(question, chunks, answerLength, citationMode = "inline", ex
   // narrating sources, records or verification.
   const persona = String(extras?.persona || "").trim();
   const groundingRules = extendedGrounding
-    ? `Prefer the sources below as your evidence. When they do not contain the answer (or no sources appear at all), you may answer from your own general knowledge — but you must say clearly that the information comes from general knowledge rather than the provided sources, never blend the two without saying which is which, and never cite a SOURCE id for a general-knowledge statement.`
+    ? persona
+      ? `Prefer the sources below as your evidence. When they do not contain the answer (or no sources appear at all), you may answer from general knowledge — but say plainly, in your own voice, that you are speaking from general knowledge rather than from what you actually know about this, never blend the two without saying which is which, and never cite a SOURCE id for a general-knowledge statement.`
+      : `Prefer the sources below as your evidence. When they do not contain the answer (or no sources appear at all), you may answer from your own general knowledge — but you must say clearly that the information comes from general knowledge rather than the provided sources, never blend the two without saying which is which, and never cite a SOURCE id for a general-knowledge statement.`
     : persona
       ? `If the sources do not contain the answer, say plainly, in your own voice, that you do not have that information — without mentioning sources, records or documents.`
       : `If the sources do not contain the answer, say: "I don't know based on the provided sources."`;
   const personaBlock = persona
     ? `${persona}
 
-You ARE this persona and you speak for yourself. The sources below are your own knowledge, not records you are consulting for someone else — there is no middleman in this conversation. State what your knowledge says plainly, in the first person, and with full confidence. Never hedge with phrases like "I cannot verify", "I cannot confirm", "it appears that" or "based on the provided sources", never say you are checking or looking anything up, and never mention sources, records or documents in the answer body.
+You ARE this persona and you speak for yourself. The sources below are your own knowledge, not records you are consulting for someone else — there is no middleman in this conversation. State what your knowledge says plainly, in the first person, and with full confidence.
+Never describe yourself in the third person and never refer to yourself by name as though you were someone else.
+Never hedge with phrases like "I cannot verify", "I cannot confirm", "it appears that" or "based on the provided sources", never say you are checking or looking anything up, and never mention sources, records, documents or passages in the answer body.
+Write the way a person talks, not the way a report is written: no headings, no "Summary:" or "Overview:" preamble, no restating the question before you answer it, and no narrating what the material says instead of simply answering.
+Never open with an attribution. Phrases like "According to the sources", "Based on the provided documents", "From the available information" and "The records show that" are forbidden — begin with the answer itself.
+Where your instructions above say otherwise, follow them — they set your voice, and these defaults only fill in what they leave unsaid.
 
 `
     : "";
@@ -908,17 +920,20 @@ async function generateAnswer(question, chunks, options = {}) {
   // Extended grounding still generates when retrieval finds nothing: the
   // prompt then requires the answer to declare itself as general knowledge.
   const extendedGrounding = options?.grounding === "extended";
+  const hasPersona = Boolean(String(options?.persona || "").trim());
 
   if ((!chunks || chunks.length === 0) && !extendedGrounding) {
     return buildUnknownAnswerResult({
-      answerLength: requestedAnswerLength
+      answerLength: requestedAnswerLength,
+      persona: hasPersona
     });
   }
 
   const safeChunks = sanitizeChunks(chunks || []);
   if (!safeChunks.length && !extendedGrounding) {
     return buildUnknownAnswerResult({
-      answerLength: requestedAnswerLength
+      answerLength: requestedAnswerLength,
+      persona: hasPersona
     });
   }
 
