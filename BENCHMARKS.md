@@ -367,6 +367,10 @@ this run the question planner used `gemini-3.8-flash` instead of
 `gpt-4.1-mini`, because the OpenAI account was out of credit; the gpt-4o judge
 was not run for the same reason.
 
+SupaVector keeps OpenAI's embeddings by default, so a self-hosted gateway runs
+on one provider key. Switching is a configuration change plus a re-embed that
+can be built beside the live index (see `docs/self-hosting.md`).
+
 **A second search round** for multi-part questions (`DEEP_PATH_FOLLOWUP=1`): a
 small model reads what the first round found and searches again for the parts
 nothing covers. Against one round at the same time, on 169 questions: accuracy
