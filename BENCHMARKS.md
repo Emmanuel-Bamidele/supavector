@@ -213,6 +213,18 @@ Paired, on the same questions (points of accuracy, 95% CI):
   the three but answers two-part yes-or-no questions part by part and holds each
   to the letter, where the reference expects one overall answer. SupaVector's
   answer rules were tuned with gpt-5.2.
+- **Citations are accurate across the board.** Scored at the document level
+  against MultiHop-RAG's labelled evidence (177 answerable questions):
+
+  | System | Cites an evidence document | Share of cited documents that are evidence | Answers with no citation |
+  |---|---|---|---|
+  | SupaVector 1.1 (gpt-5.2) | 97.7% | **82.9%** | 1.1% |
+  | OpenAI file search | 98.9% | **82.9%** | 0% |
+  | Gemini File Search | 96.6% | 80.4% | 0% |
+  | SupaVector 1.1 (Claude Sonnet 5.5) | 99.4% | 75.8% | 0% |
+  | SupaVector 1.1 (Gemini 4 Argon) | 99.4% | 75.0% | 0.6% |
+
+  Some labelled evidence is noisy, so these are lower bounds on precision.
 - **Where Gemini File Search wins.** With the same model, its several rounds of
   search find articles a question names (a given outlet's report on a given
   day) that SupaVector's single round misses. That is the clearest gap left.
@@ -319,6 +331,13 @@ boosts 0.765, hybrid with scaled boosts 0.758. The intervals overlap. SciFact's
 queries are semantic, so keyword search adds little there. It is kept for the
 exact names, numbers and identifiers people search their own documents for.
 Dense-only search has not been measured on MultiHop-RAG.
+
+**A second search round** for multi-part questions (`DEEP_PATH_FOLLOWUP=1`): a
+small model reads what the first round found and searches again for the parts
+nothing covers. Against one round at the same time, on 169 questions: accuracy
++1.2 points (−4.7 to +5.9), relevant documents reaching the answer model
+unchanged, and 0.9 s slower at the median. It stays off. Gemini File Search's
+advantage on named articles is not closed by one extra round of this kind.
 
 **The document's publisher in every chunk header** (e.g. `Source: The Verge`),
 to match questions that name an outlet. It made things worse: relevant
