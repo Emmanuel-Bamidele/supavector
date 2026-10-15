@@ -10,6 +10,8 @@
 // - "char": paragraph-aware by max chars (legacy behavior)
 // - "token": approximate token windows with overlap
 
+const { chunkStructured } = require("./chunk_structured");
+
 const DEFAULT_MAX_CHARS = 900;
 const DEFAULT_MAX_TOKENS = 220;
 const DEFAULT_OVERLAP_TOKENS = 40;
@@ -26,6 +28,7 @@ function toNonNegativeInt(value, fallback) {
 
 function normalizeStrategy(value) {
   const strategy = String(value || "char").trim().toLowerCase();
+  if (strategy === "structured") return "structured";
   if (strategy === "token") return "token";
   if (strategy === "code") return "code";
   return "char";
@@ -48,7 +51,8 @@ function resolveChunkOptions(optionsOrMaxChars) {
   const rawOverlap = toNonNegativeInt(opts.overlapTokens, DEFAULT_OVERLAP_TOKENS);
   const overlapTokens = Math.max(0, Math.min(rawOverlap, Math.max(0, maxTokens - 1)));
 
-  return { strategy, maxChars, maxTokens, overlapTokens };
+  const maxWords = toPositiveInt(opts.maxWords, 300);
+  return { strategy, maxChars, maxTokens, overlapTokens, maxWords };
 }
 
 function splitLongParagraph(paragraph, maxChars) {
@@ -222,6 +226,17 @@ function chunkText(docId, text, optionsOrMaxChars = DEFAULT_MAX_CHARS) {
   if (!cleanText) return [];
 
   const options = resolveChunkOptions(optionsOrMaxChars);
+  if (options.strategy === "structured") {
+    const structured = chunkStructured(cleanText, { maxWords: options.maxWords });
+    if (structured.length) {
+      return structured.map((chunk, i) => ({
+        chunkId: `${docId}#${i}`,
+        text: chunk.text,
+        heading: chunk.heading || null
+      }));
+    }
+  }
+
   let chunks = options.strategy === "token"
     ? chunkByApproxTokens(cleanText, options.maxTokens, options.overlapTokens)
     : options.strategy === "code"

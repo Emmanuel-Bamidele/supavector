@@ -39,7 +39,8 @@ const { __testHooks } = require("../index");
 {
   const textOptions = __testHooks.resolveChunkingOptionsForSource({ type: "text" });
   const codeOptions = __testHooks.resolveChunkingOptionsForSource({ type: "code" });
-  assert.equal(textOptions.strategy, "token");
+  // Prose follows headings and sections by default (chunk_structured.js).
+  assert.equal(textOptions.strategy, "structured");
   assert.equal(codeOptions.strategy, "code");
   assert.ok(codeOptions.maxTokens > textOptions.maxTokens);
 }

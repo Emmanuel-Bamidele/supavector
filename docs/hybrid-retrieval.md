@@ -1,5 +1,21 @@
 # Hybrid Retrieval Design Note
 
+## Current pipeline (retrieval v2)
+
+1. **Ingest.** Text is split along its headings and sections (`CHUNK_STRATEGY=structured`), with no overlap. Each chunk gets a context: the document title, its section path and, when a model is configured, a generated line placing it in its document. Context and text are embedded together and indexed for keyword search; the chunk's own text is stored unchanged. The original document text is kept for export and re-ingestion.
+2. **Plan.** A follow-up is rewritten into a standalone query using the conversation; a question about several things is split into parts (`QUERY_REWRITE_*`). Simple questions without history skip this step.
+3. **Scope.** Every document the caller may see is a candidate. HOT/WARM/COLD tiering applies only to memories.
+4. **Retrieve.** Dense search over the candidates in the C++ store, plus BM25 keyword search over a stemmed English index (`chunks.search_tsv`, OR semantics, per-term document frequency). Multi-part questions run one search per part.
+5. **Fuse.** Reciprocal rank fusion. The overlap and exact-match boosts are tie-breakers scaled to RRF's magnitude.
+6. **Rerank (optional, off by default).** With `RERANK_PROVIDER` set, the top `RERANK_CANDIDATES` go to a cross-encoder (Cohere, Voyage, Jina) or an LLM listwise reranker (`openai`). It improves search ordering (+0.04 nDCG@10 on SciFact and MultiHop-RAG) but made no measurable difference to answers, which read about ten passages whichever order they arrive in, and it adds about 1.6 s.
+7. **Assemble.** The top `k` passages (default 7) get their neighbouring chunks attached. Multi-part questions get at least 10, and each part keeps its best passage. Small scopes can skip retrieval and send everything (`FULL_CONTEXT_MAX_CHARS`). On MultiHop-RAG, `k: 20` got 85.5% of relevant documents to the answer model (74% at 7) and scored 82.0% against 79.5%, at the same latency and about 1.8× the answer model's input tokens. The Supavector app sends `k: 20`.
+
+Measured results, including the comparison with OpenAI file search: [`BENCHMARKS.md`](../BENCHMARKS.md).
+
+The sections below describe the original Phase 1 change this pipeline builds on.
+
+## Phase 1 note
+
 This note describes the Phase 1 retrieval change shipped in SupaVector.
 
 Phase 2 retrieval correctness work builds on this baseline with first-class filters, freshness-aware time windows, and a fixture-driven evaluation harness. See [`retrieval-correctness.md`](retrieval-correctness.md) for those additions.

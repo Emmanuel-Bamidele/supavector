@@ -77,6 +77,7 @@ function rankSearchCandidates(candidates, {
   exactBoostScale,
   favorRecency,
   candidateTypes,
+  rrfBoostScale = 1,
   recencyWeight,
   recencyHalfLifeDays,
   determineRecencyBoostMode,
@@ -132,9 +133,16 @@ function rankSearchCandidates(candidates, {
     const hasExactMatch = useHybrid
       && cleanQuery.length >= 8
       && String(candidate?.row?.text || "").toLowerCase().includes(cleanQuery);
+    // Boosts are tie-breakers on the fusion's own scale. RRF scores are about
+    // 1/(k+1) (~0.016 at k=60), so unscaled boosts of 0.12/0.08 used to swamp
+    // both rankers and let raw word overlap decide the order (on BEIR SciFact
+    // that cost ~0.12 nDCG@10).
+    // rrfBoostScale tunes how much those tie-breakers can move a result
+    // (1 = one RRF step; larger favours exact-term matches).
+    const boostUnit = cleanFusionMode === "rrf" ? clampNumber(rrfBoostScale, 0, 200) / (cleanRankConstant + 1) : 1;
     const fusedScore = baseFusionScore
-      + (overlapScore * clampNumber(overlapBoostScale, 0, 1))
-      + (hasExactMatch ? clampNumber(exactBoostScale, 0, 1) : 0);
+      + (overlapScore * clampNumber(overlapBoostScale, 0, 1) * boostUnit)
+      + (hasExactMatch ? clampNumber(exactBoostScale, 0, 1) * boostUnit : 0);
     const recencyMode = resolveRecencyMode({
       explicitFavorRecency: favorRecency,
       memory: candidate?.memory,

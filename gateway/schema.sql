@@ -11,6 +11,39 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks(doc_id);
 CREATE INDEX IF NOT EXISTS chunks_text_fts_idx ON chunks USING GIN (to_tsvector('simple', text));
 
+-- Retrieval v2. `context` situates a chunk in its document (written at ingest,
+-- fed to embedding and keyword search, never returned as the chunk's text:
+-- callers rebuild documents by joining `text`). `search_tsv` is the stemmed
+-- English vector BM25 keyword search reads, stored so queries never re-parse.
+-- It is a plain column kept current by a trigger, never a generated column:
+-- adding a generated column rewrites the whole table under an exclusive lock,
+-- which would stall a large deployment at startup. Existing rows are filled
+-- in the background in small batches and the GIN index is built concurrently
+-- (db.js ensureSearchIndex).
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS search_tsv tsvector;
+DO $$
+BEGIN
+  -- Early v2 builds made search_tsv a generated column; keep its values, drop the expression.
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'chunks' AND column_name = 'search_tsv' AND is_generated = 'ALWAYS'
+  ) THEN
+    ALTER TABLE chunks ALTER COLUMN search_tsv DROP EXPRESSION;
+  END IF;
+END $$;
+CREATE OR REPLACE FUNCTION sv_chunks_search_tsv() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.search_tsv := to_tsvector('english'::regconfig, coalesce(NEW.context, '') || ' ' || NEW.text);
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS chunks_search_tsv_trg ON chunks;
+CREATE TRIGGER chunks_search_tsv_trg
+  BEFORE INSERT OR UPDATE OF text, context ON chunks
+  FOR EACH ROW EXECUTE FUNCTION sv_chunks_search_tsv();
+
 CREATE OR REPLACE FUNCTION sv_try_timestamptz(value TEXT)
 RETURNS TIMESTAMPTZ
 LANGUAGE plpgsql
@@ -500,3 +533,12 @@ CREATE TABLE IF NOT EXISTS memory_events (
 CREATE INDEX IF NOT EXISTS memory_events_tenant_idx ON memory_events(tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS memory_events_memory_idx ON memory_events(memory_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS memory_events_type_idx ON memory_events(tenant_id, event_type, created_at DESC);
+
+-- Original document text (artifacts), kept so a document can be exported
+-- whole and re-ingested when chunking or context improve. It cascades from
+-- the artifact row, so every path that deletes a document deletes its text.
+CREATE TABLE IF NOT EXISTS doc_texts (
+  namespace_id TEXT PRIMARY KEY REFERENCES memory_items(namespace_id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

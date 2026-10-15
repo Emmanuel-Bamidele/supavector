@@ -9,12 +9,15 @@
 // This file creates embeddings (vectors) for text chunks and queries.
 
 const crypto = require("crypto");
-const { DEFAULT_EMBED_MODEL, normalizeModelId, normalizeProviderId } = require("./model_config");
+const { normalizeProviderId, resolveEmbedModelForProvider } = require("./model_config");
 const { embedProviderTexts } = require("./provider_clients");
 
 const DEFAULT_BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE || "64", 10);
 const FALLBACK_DIM = parseInt(process.env.EMBED_FALLBACK_DIM || "1536", 10);
-const EMBED_FALLBACK_ON_ERROR = process.env.EMBED_FALLBACK_ON_ERROR !== "0";
+// Hash-based fallback vectors are for local runs and CI without a provider key
+// ONLY. Written into a live index they make documents unfindable by meaning,
+// silently, so they are off unless explicitly enabled with "1".
+const EMBED_FALLBACK_ON_ERROR = process.env.EMBED_FALLBACK_ON_ERROR === "1";
 const QUERY_EMBED_CACHE_TTL_MS = parseInt(process.env.QUERY_EMBED_CACHE_TTL_MS || "30000", 10);
 const QUERY_EMBED_CACHE_MAX_ITEMS = parseInt(process.env.QUERY_EMBED_CACHE_MAX_ITEMS || "256", 10);
 let fallbackWarned = false;
@@ -33,9 +36,7 @@ function resolveEmbedProvider(options = {}) {
 }
 
 function resolveEmbedModel(options = {}) {
-  return normalizeModelId(options?.embedModel)
-    || normalizeModelId(process.env.EMBED_MODEL)
-    || DEFAULT_EMBED_MODEL;
+  return resolveEmbedModelForProvider(resolveEmbedProvider(options), options?.embedModel || process.env.EMBED_MODEL);
 }
 
 function resolveEmbedDimension(options = {}) {

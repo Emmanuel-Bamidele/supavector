@@ -295,7 +295,7 @@ curl -sS "${SUPAVECTOR_BASE_URL}/v1/search?q=memory&k=5&collection=default&polic
   -H "X-API-Key: ${SUPAVECTOR_API_KEY}"
 ```
 
-Search is hybrid by default: the gateway combines vector retrieval from the C++ store with lexical full-text retrieval from Postgres and fuses the rankings with reciprocal rank fusion. That gives better recall for exact identifiers, error codes, ticket ids, and mixed semantic-plus-exact queries without dropping semantic-only retrieval.
+Search is hybrid by default: the gateway combines vector retrieval from the C++ store with BM25 keyword retrieval from Postgres, fuses the rankings with reciprocal rank fusion, and can rerank the result (`rerank=1`). Add `includeText=1` for each passage's whole text and context, useful when your own model answers from the passages. `score` orders results within one query; `similarity` is the cosine similarity of the dense match. That gives better recall for exact identifiers, error codes, ticket ids, and mixed semantic-plus-exact queries without dropping semantic-only retrieval.
 
 Search, ask, code, boolean_ask, and memory recall now share the same retrieval filter surface: `docIds`, `namespaceIds`, `tags`, `agentId`, `sourceTypes`, `documentTypes`, `since`, `until`, and `timeField`. Use `timeField: "freshness"` when the time window should follow metadata timestamps such as `updatedAt` or `syncedAt` instead of original ingest time.
 
@@ -314,6 +314,25 @@ curl -sS "${SUPAVECTOR_BASE_URL}/v1/ask" \
     "answerLength":"medium"
   }'
 ```
+
+#### Citations you can show
+
+Send `"citationMode":"numbered"` and the answer cites its sources inline as `[1]`, `[2]`, and `[n]` always refers to `citations[n-1]`. Each citation carries `title`, `url` (for web sources) and `snippet`. An answer with no markers has no citations: nothing is attached on the model's behalf, so an empty list reliably means the knowledge did not cover the question.
+
+```json
+{ "answer": "Refunds are issued within 14 days [1]. Store credit never expires [2].",
+  "citations": [
+    { "n": 1, "docId": "refund-policy", "title": "Refund policy", "snippet": "Refunds are issued within 14 days of purchase…" },
+    { "n": 2, "docId": "refund-policy", "title": "Refund policy", "url": "https://example.com/refunds", "snippet": "Store credit never expires…" } ] }
+```
+
+#### Streaming
+
+Send `"stream": true` (or `Accept: text/event-stream`) to receive `delta` events while the answer is written, then one `answer` event carrying the same payload as the JSON response, then `done`. Streamed markers are already numbered as in the final answer. The SDKs expose this as `askStream(question, params, onDelta)` (Node) and `ask_stream(question, params)` (Python).
+
+#### Follow-ups
+
+Pass the conversation as `history: [{ "role": "user" | "assistant", "text": "..." }]`. The gateway turns a follow-up into a standalone search query (and splits multi-part questions into parts) before retrieving; `retrievalQuery` in the response shows what was searched.
 
 Add `"favorRecency": true` when newer matching evidence should rank ahead of older chunks. This is especially useful for continuously updated facts such as product catalogs, release notes, incident timelines, and conversation-like state. Synced sources attach `syncedAt` automatically, and direct writes can also include timestamps such as `updatedAt`, `publishedAt`, `effectiveAt`, or `syncedAt` in `metadata`.
 

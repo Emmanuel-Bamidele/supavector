@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "SupaVector API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "SupaVector provides hybrid retrieval, grounded answers, and long-term memory APIs for multi-tenant agents. Recommended integration model: bootstrap once, store a service token, and let your backend or runtime agent call SupaVector directly. Use JWTs mainly for human admin sessions. If you want SupaVector to keep its own Postgres/auth runtime but use your own provider key for a request, send the matching request-scoped header on supported sync routes: X-OpenAI-API-Key, X-Gemini-API-Key, or X-Anthropic-API-Key. Those overrides are request-scoped and are rejected by asynchronous memory reflect/compact flows. All /v1 endpoints return a standard response envelope: { ok, data|error, meta }. For idempotent write endpoints, send a unique Idempotency-Key per logical request."
   },
   "servers": [
@@ -74,16 +74,12 @@
         "type": "object",
         "properties": {
           "tenantId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "collection": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "timestamp": {
             "type": "string",
@@ -129,10 +125,8 @@
                 "type": "string"
               },
               "code": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "type": "string",
+                "nullable": true
               }
             },
             "required": [
@@ -220,32 +214,24 @@
             }
           },
           "lastUsedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "expiresAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "revokedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "createdAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           }
         }
       },
@@ -406,10 +392,8 @@
             "type": "string"
           },
           "dimensions": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer",
+            "nullable": true
           },
           "recommended": {
             "type": "boolean"
@@ -503,60 +487,44 @@
         "type": "object",
         "properties": {
           "answerProvider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for ask generation provider. null or empty clears the override and falls back to the instance default."
+            "type": "string",
+            "description": "Tenant override for ask generation provider. null or empty clears the override and falls back to the instance default.",
+            "nullable": true
           },
           "answerModel": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for ask generation. null or empty clears the override and falls back to the instance default."
+            "type": "string",
+            "description": "Tenant override for ask generation. null or empty clears the override and falls back to the instance default.",
+            "nullable": true
           },
           "booleanAskProvider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for boolean_ask generation provider. If unset, boolean_ask follows the tenant answerProvider or instance default."
+            "type": "string",
+            "description": "Tenant override for boolean_ask generation provider. If unset, boolean_ask follows the tenant answerProvider or instance default.",
+            "nullable": true
           },
           "booleanAskModel": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for boolean_ask generation. If unset, boolean_ask follows the tenant answerModel or instance default."
+            "type": "string",
+            "description": "Tenant override for boolean_ask generation. If unset, boolean_ask follows the tenant answerModel or instance default.",
+            "nullable": true
           },
           "reflectProvider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for reflection provider."
+            "type": "string",
+            "description": "Tenant override for reflection provider.",
+            "nullable": true
           },
           "reflectModel": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for reflection jobs."
+            "type": "string",
+            "description": "Tenant override for reflection jobs.",
+            "nullable": true
           },
           "compactProvider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for compaction provider. If unset, compaction follows the tenant reflectProvider or instance default."
+            "type": "string",
+            "description": "Tenant override for compaction provider. If unset, compaction follows the tenant reflectProvider or instance default.",
+            "nullable": true
           },
           "compactModel": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tenant override for compaction jobs. If unset, compaction follows the tenant reflectModel or instance default."
+            "type": "string",
+            "description": "Tenant override for compaction jobs. If unset, compaction follows the tenant reflectModel or instance default.",
+            "nullable": true
           }
         }
       },
@@ -616,10 +584,8 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "authMode": {
             "$ref": "#/components/schemas/TenantAuthMode"
@@ -668,6 +634,44 @@
           },
           "tcp": {
             "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "Gateway version."
+          },
+          "features": {
+            "type": "object",
+            "description": "What this gateway supports, so callers enable newer contracts only where they exist.",
+            "properties": {
+              "numberedCitations": {
+                "type": "boolean"
+              },
+              "searchText": {
+                "type": "boolean"
+              },
+              "docTextExport": {
+                "type": "boolean"
+              },
+              "reingest": {
+                "type": "boolean"
+              },
+              "queryRewrite": {
+                "type": "boolean"
+              },
+              "bm25": {
+                "type": "boolean"
+              },
+              "rerank": {
+                "type": "boolean"
+              },
+              "structuredChunks": {
+                "type": "boolean"
+              }
+            }
+          },
+          "vector": {
+            "type": "object",
+            "description": "Vector store health snapshot."
           }
         }
       },
@@ -834,7 +838,8 @@
                   "type": "string"
                 },
                 "score": {
-                  "type": "number"
+                  "type": "number",
+                  "description": "Ranking score: orders results within this query (higher is better). Not comparable across queries; use similarity to compare meaning."
                 },
                 "docId": {
                   "type": "string"
@@ -844,6 +849,25 @@
                 },
                 "preview": {
                   "type": "string"
+                },
+                "similarity": {
+                  "type": "number",
+                  "nullable": true,
+                  "description": "Cosine similarity of the dense match; null for keyword-only hits."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Whole passage text (only with includeText=1)."
+                },
+                "context": {
+                  "type": "string",
+                  "description": "The passage's situating context (only with includeText=1)."
                 }
               }
             }
@@ -966,6 +990,33 @@
           },
           "tenantId": {
             "type": "string"
+          },
+          "citationMode": {
+            "type": "string",
+            "enum": [
+              "inline",
+              "metadata",
+              "numbered"
+            ],
+            "default": "inline",
+            "description": "inline: a trailing Citations line of chunk ids. metadata: no markers in the answer. numbered: sources are cited inline as [1], [2]...; [n] in the answer always refers to citations[n-1], and an answer with no markers has no citations."
+          },
+          "grounding": {
+            "type": "string",
+            "enum": [
+              "strict",
+              "extended"
+            ],
+            "default": "strict",
+            "description": "strict answers only from retrieved sources; extended may use general knowledge, which the answer must label as such."
+          },
+          "persona": {
+            "type": "string",
+            "description": "Optional voice the answer is written in (first person, as the knowledge owner)."
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "Stream the answer as server-sent events (same as Accept: text/event-stream): delta events with {text}, then one answer event with the full AskResponseData payload, then done."
           }
         },
         "required": [
@@ -986,20 +1037,32 @@
             "items": {
               "type": "object",
               "properties": {
+                "n": {
+                  "type": "integer",
+                  "description": "1-based position; in numbered mode the answer's [n] marker refers to this citation."
+                },
                 "chunkId": {
                   "type": "string"
                 },
                 "docId": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
                 },
                 "collection": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Source document title."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Source URL when the document came from the web."
+                },
+                "snippet": {
+                  "type": "string",
+                  "description": "Excerpt of the cited passage."
                 }
               }
             }
@@ -1010,6 +1073,7 @@
           "answerLength": {
             "type": "string",
             "enum": [
+              "auto",
               "short",
               "medium",
               "long"
@@ -1034,6 +1098,16 @@
               "created_at",
               "freshness"
             ]
+          },
+          "supportingChunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupportingChunk"
+            }
+          },
+          "retrievalQuery": {
+            "type": "string",
+            "description": "The standalone query actually searched when the question was rewritten using history."
           }
         }
       },
@@ -1179,16 +1253,12 @@
                   "type": "string"
                 },
                 "docId": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
                 },
                 "collection": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
                 }
               }
             }
@@ -1214,28 +1284,22 @@
             "type": "string"
           },
           "language": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "deployment": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "repository": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": true
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true
           },
           "files": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object"
             }
           },
           "workingSet": {
@@ -1247,7 +1311,8 @@
             "additionalProperties": true
           },
           "relationshipSummary": {
-            "type": "string"
+            "type": "object",
+            "nullable": true
           },
           "provider": {
             "$ref": "#/components/schemas/GenerationProviderId"
@@ -1280,28 +1345,20 @@
             "type": "integer"
           },
           "chunkId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "docId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "collection": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "score": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "number",
+            "nullable": true
           },
           "text": {
             "type": "string"
@@ -1433,16 +1490,12 @@
                   "type": "string"
                 },
                 "docId": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
                 },
                 "collection": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string",
+                  "nullable": true
                 }
               }
             }
@@ -1513,22 +1566,16 @@
             "$ref": "#/components/schemas/MemoryPolicy"
           },
           "externalId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "principalId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "agentId": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "tags": {
             "type": "array",
@@ -1551,73 +1598,55 @@
             }
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "sourceType": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "sourceUrl": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "metadata": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": "object",
+            "nullable": true
           },
           "createdAt": {
             "type": "string",
             "format": "date-time"
           },
           "expiresAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "valueScore": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "description": "AMV-L memory value score after incremental decay/reinforcement update."
+            "type": "number",
+            "description": "AMV-L memory value score after incremental decay/reinforcement update.",
+            "nullable": true
           },
           "tier": {
             "$ref": "#/components/schemas/MemoryTier"
           },
           "valueLastUpdateTs": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Unix epoch milliseconds for the last value update."
+            "type": "integer",
+            "description": "Unix epoch milliseconds for the last value update.",
+            "nullable": true
           },
           "tierLastUpdateTs": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Unix epoch milliseconds for the last tier transition."
+            "type": "integer",
+            "description": "Unix epoch milliseconds for the last tier transition.",
+            "nullable": true
           },
           "reuseCount": {
             "type": "integer"
           },
           "lastUsedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "utilityEma": {
             "type": "number"
@@ -1629,10 +1658,8 @@
             "type": "number"
           },
           "importanceHint": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "number",
+            "nullable": true
           },
           "pinned": {
             "type": "boolean"
@@ -2013,10 +2040,8 @@
             "type": "string"
           },
           "valueScore": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "number",
+            "nullable": true
           }
         }
       },
@@ -2067,10 +2092,8 @@
             "type": "number"
           },
           "valueScore": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "number",
+            "nullable": true
           }
         }
       },
@@ -2087,38 +2110,28 @@
             "type": "string"
           },
           "error": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "nullable": true
           },
           "input": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": "object",
+            "nullable": true
           },
           "output": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": "object",
+            "nullable": true
           },
           "attempts": {
             "type": "integer"
           },
           "maxAttempts": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer",
+            "nullable": true
           },
           "nextRunAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           },
           "createdAt": {
             "type": "string",
@@ -2538,7 +2551,7 @@
             }
           }
         },
-        "description": "Update tenant auth settings and tenant-level generation provider/model defaults. embedProvider and embedModel are intentionally instance-wide and are not updated here.",
+        "description": "Update tenant authentication policy (admin role required).",
         "responses": {
           "200": {
             "description": "OK",
@@ -2581,8 +2594,7 @@
               }
             }
           }
-        },
-        "description": "Update tenant authentication policy (admin role required)."
+        }
       }
     },
     "/v1/admin/service-tokens": {
@@ -2783,6 +2795,30 @@
             },
             "example": "acme",
             "description": "Optional tenant override for admin-compatible clients."
+          },
+          {
+            "in": "query",
+            "name": "includeText",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Include each document's title and whole original text (paged)."
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Page start when includeText is set."
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Page size when includeText is set (default 200, max 1000)."
           }
         ],
         "responses": {
@@ -3095,6 +3131,22 @@
               "type": "string"
             },
             "example": "acme"
+          },
+          {
+            "in": "query",
+            "name": "includeText",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Return each passage's whole text and context."
+          },
+          {
+            "in": "query",
+            "name": "rerank",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Rerank the candidates with the configured reranker. Defaults to on for hosted cross-encoders and off for the LLM reranker."
           }
         ],
         "responses": {
@@ -3178,7 +3230,7 @@
             }
           }
         },
-        "description": "Retrieve relevant chunks and generate a grounded answer with citations. `history` and `background` are optional generation-only context; retrieval continues to use the standalone question. `provider` and `model` can override the tenant or instance generation defaults for this request. Retrieval still uses the instance-wide embedding provider/model, and supports first-class filters plus freshness-aware time windows."
+        "description": "Retrieve relevant chunks and generate a grounded answer with citations. `history` and `background` are optional generation-only context; retrieval continues to use the standalone question. `provider` and `model` can override the tenant or instance generation defaults for this request. Retrieval still uses the instance-wide embedding provider/model, and supports first-class filters plus freshness-aware time windows. Streaming: send stream: true (or Accept: text/event-stream) to receive delta events while the answer is written, then one answer event carrying the full payload, then done."
       }
     },
     "/v1/code": {
@@ -3897,6 +3949,65 @@
         },
         "description": "Prometheus-formatted metrics for runtime monitoring.",
         "x-internal": true
+      }
+    },
+    "/v1/admin/reingest": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Re-ingestion status",
+        "description": "Instance admin only. Progress of the current or last re-ingestion job.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Re-ingest documents onto the current pipeline",
+        "description": "Instance admin only. Re-runs indexing (structure-aware chunks, chunk context, current embedding model) for every document, optionally scoped to a tenant and collection, from each document's original text. Documents swap one at a time; search keeps serving throughout.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tenantId": {
+                    "type": "string"
+                  },
+                  "collection": {
+                    "type": "string"
+                  },
+                  "concurrency": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job started (or already running)"
+          }
+        }
       }
     }
   }

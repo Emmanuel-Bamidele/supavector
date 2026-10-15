@@ -142,7 +142,7 @@ COMPACT_MODEL=gpt-5-nano
 `BOOLEAN_ASK_MODEL` falls back to `ANSWER_MODEL` when blank. `COMPACT_MODEL` falls back to `REFLECT_MODEL` when blank.
 `EMBED_MODEL` is instance-wide. Because SupaVector stores all vectors in one embedding space, changing `EMBED_MODEL` requires a reindex. Fresh CLI-managed installs and the example env files pin `EMBED_MODEL=text-embedding-3-large`; older installs should pin it explicitly before changing it.
 On startup, SupaVector also rebuilds vectors automatically if it detects that the live vector store count or dimension no longer matches the stored chunks for the current embedding model.
-The default OSS profile keeps `VECTOR_WAL=0` and relies on reindex-from-Postgres on startup. Set `VECTOR_WAL=1` only if you want vector WAL durability across restart.
+Vector durability: with `VECTOR_WAL=1` (the production compose default) the vector store reloads its vectors from its write-ahead log after a restart. The log is synced to disk every `VECTOR_WAL_FSYNC_MS` (default 1000; a host crash loses at most that window) and rewritten once it holds twice the live vectors. Budget about 30 KB of disk per 3072-dimension vector, times three at the compaction peak. With `VECTOR_WAL=0` (the default OSS and local profiles) a restarted store comes back empty: the gateway notices within `VECTOR_STORE_WATCH_MS` (default 60 s) and re-embeds every chunk from Postgres, which costs embedding calls and leaves meaning-based search degraded until it finishes. Re-index rebuilds overwrite vectors in place, so search keeps serving; only a change of embedding dimension clears the store first.
 `ANSWER_PROVIDER`, `BOOLEAN_ASK_PROVIDER`, `REFLECT_PROVIDER`, and `COMPACT_PROVIDER` can be `openai`, `gemini`, or `anthropic`. `EMBED_PROVIDER` can be `openai` or `gemini`. Anthropic is generation-only today because SupaVector still needs a provider-native embedding endpoint for indexing and retrieval.
 Common generation presets include:
 - OpenAI: `gpt-5.2`, `gpt-5-mini`, `gpt-5-nano`
@@ -509,6 +509,30 @@ Once the stack is running, the main local URLs are:
 - public OpenAPI schema: `http://localhost:3000/openapi.public.json`
 - MCP endpoint: `http://localhost:3000/mcp`
 - LLM discovery file: `http://localhost:3000/llms.txt`
+
+## Changing The Embedding Model Without A Search Gap
+
+The vector store records which embedding model built it
+(`provider:model:dimensions`). If you change `EMBED_PROVIDER` or `EMBED_MODEL` and
+restart, the gateway notices, clears the store and re-embeds every chunk.
+Meaning-based search is degraded until that finishes, and keyword search
+carries on. To avoid the gap, build the new vectors in a second store first:
+
+1. Start a second vector store on its own port and volume, for example
+   `ATLASRAG_PORT=6380` with `VECTOR_WAL=1`.
+2. Run a builder gateway against the same Postgres, pointed at that store, with
+   the new model and its background jobs off, so billing, decay and sweeps
+   don't run twice:
+   `TCP_PORT=6380 EMBED_PROVIDER=gemini EMBED_MODEL=gemini-embedding-2
+   REINDEX_ON_START=force BACKGROUND_JOBS=off GATEWAY_PORT=3001`.
+   It only writes vectors to its own store. Wait for
+   `[reindex] Completed` in its log, then stop it.
+3. Point the live gateway at the new store with the same model settings
+   (`TCP_PORT=6380`, `EMBED_PROVIDER`, `EMBED_MODEL`) and restart it. Documents
+   added during the build exist only in the old store; the gateway sees the
+   missing vectors and fills them in place, with search serving throughout.
+   Pausing uploads during the build avoids that catch-up pass.
+4. Keep the old store until you're satisfied, then remove it.
 
 ## Daily Operations
 

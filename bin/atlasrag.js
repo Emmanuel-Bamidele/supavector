@@ -6,7 +6,8 @@ const path = require("path");
 const readline = require("readline");
 const { spawn, spawnSync } = require("child_process");
 
-const { AtlasRAGClient } = require("../sdk/node/src/client");
+// Legacy entry point; the SDK client was renamed SupaVectorClient.
+const { SupaVectorClient: AtlasRAGClient } = require("../sdk/node/src/client");
 const {
   PACKAGE_ROOT,
   CONFIG_FILE,

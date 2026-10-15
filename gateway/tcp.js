@@ -255,6 +255,15 @@ function buildVclear() {
   return "VCLEAR";
 }
 
+// String key/value commands. Keys and values must not contain spaces.
+function buildSet(key, value) {
+  return `SET ${key} ${value}`;
+}
+
+function buildGet(key) {
+  return `GET ${key}`;
+}
+
 // Parse VSEARCH reply:
 // "id1 score1|id2 score2|id3 score3"
 function parseVsearchReply(line) {
@@ -292,6 +301,8 @@ module.exports = {
   buildVdel,
   buildVdelPrefix,
   buildVclear,
+  buildSet,
+  buildGet,
   parseVsearchReply,
   __testHooks: {
     buildVdelPrefix,
