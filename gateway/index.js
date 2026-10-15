@@ -25,7 +25,7 @@ const {
   resolveMemoryFavorRecencyPreference,
   resolveMemoryKnowledgeType
 } = require("./retrieval_planner");
-const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVsearchAnnIn, buildVdel, buildVclear, parseVsearchReply } = require("./tcp");
+const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVsearchAnnIn, buildVdel, buildVclear, buildSet, buildGet, parseVsearchReply } = require("./tcp");
 const { planRetrieval, planFollowupSearches } = require("./query_rewrite");
 const { rerankCandidates, rerankEnabled, RERANK_CANDIDATES, RERANK_PROVIDER } = require("./rerank");
 const { buildChunkContexts } = require("./chunk_context");
@@ -4280,6 +4280,31 @@ function resolveInstanceEmbedConfig(provider = null, model = null) {
   return { embedProvider, embedModel };
 }
 
+// Which embedding model built the stored vectors: provider:model:dimensions,
+// kept in the vector store's key/value data (always written to its log).
+const EMBED_FINGERPRINT_KEY = "supavector:embed_fingerprint";
+
+function expectedEmbedFingerprint(dims) {
+  const { embedProvider, embedModel } = resolveInstanceEmbedConfig();
+  return dims > 0 ? `${embedProvider}:${embedModel}:${dims}` : null;
+}
+
+async function readEmbedFingerprint() {
+  try {
+    const value = String(await sendCmd(buildGet(EMBED_FINGERPRINT_KEY)) || "").trim();
+    return value && value !== "(nil)" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeEmbedFingerprint(fingerprint) {
+  if (!fingerprint) return;
+  await sendCmd(buildSet(EMBED_FINGERPRINT_KEY, fingerprint)).catch((err) => {
+    console.warn("[reindex] could not record the embedding model:", err?.message || err);
+  });
+}
+
 async function clearVectorStore() {
   await sendCmd(buildVclear());
 }
@@ -4289,7 +4314,7 @@ async function clearVectorStore() {
 // dimension changed: one store holds one dimension, and every old vector is
 // unusable anyway. Extra vectors are harmless (search is scoped to chunk ids
 // from Postgres) and never trigger a paid full rebuild on their own.
-function shouldReindexStoredVectors({ mode, totalChunks, vectorCount, vectorDims, expectedVectorDim }) {
+function shouldReindexStoredVectors({ mode, totalChunks, vectorCount, vectorDims, expectedVectorDim, storedFingerprint = null, expectedFingerprint = null }) {
   const normalizedMode = normalizeReindexMode(mode);
   if (normalizedMode === "off") {
     return { shouldReindex: false, clearFirst: false, reason: "disabled" };
@@ -4297,6 +4322,13 @@ function shouldReindexStoredVectors({ mode, totalChunks, vectorCount, vectorDims
   const dimsMismatch = expectedVectorDim > 0 && vectorDims > 0 && vectorDims !== expectedVectorDim && vectorCount > 0;
   if (dimsMismatch) {
     return { shouldReindex: true, clearFirst: true, reason: "dimension_mismatch" };
+  }
+  // Two models with the same dimension (text-embedding-3-large and the Gemini
+  // embeddings are both 3072) can't be told apart by size. The store records
+  // which model built it; vectors from another model are cleared, as for a
+  // dimension change, because mixing them would return wrong neighbours.
+  if (vectorCount > 0 && storedFingerprint && expectedFingerprint && storedFingerprint !== expectedFingerprint) {
+    return { shouldReindex: true, clearFirst: true, reason: "model_changed" };
   }
   if (normalizedMode === "always") {
     return { shouldReindex: true, clearFirst: false, reason: "forced" };
@@ -4385,15 +4417,24 @@ async function reindexAllChunks(options = {}) {
   // Stats are read in every mode, so a forced rebuild still notices a
   // dimension change instead of failing on the first mismatched VSET.
   let decision;
+  const expectedFingerprint = expectedEmbedFingerprint(expectedVectorDim);
   try {
     const { vectors, vectorDims } = await getVectorStats();
+    const storedFingerprint = await readEmbedFingerprint();
     decision = shouldReindexStoredVectors({
       mode,
       totalChunks,
       vectorCount: vectors,
       vectorDims,
-      expectedVectorDim
+      expectedVectorDim,
+      storedFingerprint,
+      expectedFingerprint
     });
+    // A store from before fingerprints adopts the configured model.
+    if (!storedFingerprint && decision.reason !== "dimension_mismatch") await writeEmbedFingerprint(expectedFingerprint);
+    if (decision.reason === "model_changed") {
+      console.warn(`[reindex] Embedding model changed (store=${storedFingerprint}, configured=${expectedFingerprint}); clearing and rebuilding vectors. Build in a second vector store first to avoid the gap.`);
+    }
     if (!decision.shouldReindex) {
       console.log(decision.reason === "extra_vectors"
         ? `[reindex] Vector store has ${vectors} vectors for ${totalChunks} chunks; the extras are never searched, skipping rebuild.`
@@ -4455,6 +4496,7 @@ async function reindexAllChunks(options = {}) {
   }
 
   console.log(`[reindex] Completed: ${processed}/${totalChunks} chunks indexed.`);
+  await writeEmbedFingerprint(expectedFingerprint);
   lastReindexState = { ...lastReindexState, status: "completed", finishedAt: new Date().toISOString(), processed, total: totalChunks };
   } catch (err) {
     lastReindexState = {

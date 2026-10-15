@@ -84,12 +84,41 @@ function testForcedRebuildOverwritesInPlace() {
   assert.equal(decision.reason, "forced");
 }
 
+function testModelChangeOfTheSameDimensionClears() {
+  const changed = __testHooks.shouldReindexStoredVectors({
+    mode: "auto",
+    totalChunks: 17,
+    vectorCount: 17,
+    vectorDims: 3072,
+    expectedVectorDim: 3072,
+    storedFingerprint: "openai:text-embedding-3-large:3072",
+    expectedFingerprint: "gemini:gemini-embedding-2:3072"
+  });
+  assert.equal(changed.shouldReindex, true);
+  assert.equal(changed.clearFirst, true);
+  assert.equal(changed.reason, "model_changed");
+
+  // A store from before fingerprints is not rebuilt for lacking one.
+  const legacy = __testHooks.shouldReindexStoredVectors({
+    mode: "auto",
+    totalChunks: 17,
+    vectorCount: 17,
+    vectorDims: 3072,
+    expectedVectorDim: 3072,
+    storedFingerprint: null,
+    expectedFingerprint: "openai:text-embedding-3-large:3072"
+  });
+  assert.equal(legacy.shouldReindex, false);
+  assert.equal(legacy.reason, "up_to_date");
+}
+
 function main() {
   testSkipsWhenVectorStoreMatchesCurrentChunksAndDims();
   testClearsOnlyOnDimensionChange();
   testMissingVectorsRebuildInPlace();
   testExtraVectorsDoNotTriggerARebuild();
   testForcedRebuildOverwritesInPlace();
+  testModelChangeOfTheSameDimensionClears();
   console.log("reindex guard tests passed");
 }
 
