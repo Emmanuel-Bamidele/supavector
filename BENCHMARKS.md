@@ -332,6 +332,24 @@ queries are semantic, so keyword search adds little there. It is kept for the
 exact names, numbers and identifiers people search their own documents for.
 Dense-only search has not been measured on MultiHop-RAG.
 
+**Embedding model.** The same chunks and generated context, embedded with
+OpenAI's `text-embedding-3-large` (the default) or Google's `gemini-embedding-2`,
+with no reranker. Gemini's embeddings rank better on all three datasets:
+
+| nDCG@10 | text-embedding-3-large | gemini-embedding-2 | Paired difference (95% CI) |
+|---|---|---|---|
+| BEIR SciFact (300) | 0.758 | **0.816** | +0.058 (+0.036 to +0.082) |
+| MultiHop-RAG (177) | 0.756 | **0.813** | +0.056 (+0.036 to +0.077) |
+| LoCoMo (199) | 0.784 | **0.813** | +0.029 (+0.008 to +0.053) |
+
+Recall@10 rises from 0.882 to 0.939 on SciFact and from 0.828 to 0.889 on
+MultiHop-RAG (LoCoMo 0.932 vs 0.926). Search time is unchanged (MultiHop-RAG
+median 287 ms vs 289 ms). With Gemini's embeddings and no reranker, MultiHop-RAG
+retrieval (0.813) beats SupaVector with the reranker (0.797) and OpenAI file
+search (0.731). Answer accuracy with Gemini's embeddings has not been measured
+yet. The MultiHop-RAG baseline here is the same index rebuilt for this test, so
+its contexts were regenerated (0.756 against 0.758 in the headline run).
+
 **A second search round** for multi-part questions (`DEEP_PATH_FOLLOWUP=1`): a
 small model reads what the first round found and searches again for the parts
 nothing covers. Against one round at the same time, on 169 questions: accuracy
