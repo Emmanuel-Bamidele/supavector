@@ -6,7 +6,7 @@ Open-source repo scope: self-hosted runtime, CLI, and SDKs. If you are using a r
 
 License: MIT
 
-[Quickstart](QUICKSTART.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Good First Issues](docs/good-first-issues.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · [Support](SUPPORT.md)
+[Quickstart](QUICKSTART.md) · [Benchmarks](BENCHMARKS.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Good First Issues](docs/good-first-issues.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · [Support](SUPPORT.md)
 
 ## Start Here
 
@@ -804,6 +804,7 @@ The production compose file now supports an external cert directory for the inte
 
 ## Project Docs
 
+- Benchmarks against OpenAI file search, with per-question results: [`BENCHMARKS.md`](BENCHMARKS.md)
 - Self-hosting guide: [`docs/self-hosting.md`](docs/self-hosting.md)
 - Bring your own Postgres: [`docs/bring-your-own-postgres.md`](docs/bring-your-own-postgres.md)
 - Agent integration guide: [`docs/agents.md`](docs/agents.md)
