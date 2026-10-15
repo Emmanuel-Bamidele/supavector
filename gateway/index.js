@@ -418,6 +418,7 @@ const REINDEX_MODE = String(process.env.REINDEX_ON_START || "auto").toLowerCase(
 // The vector store can restart on its own (crash, OOM, upgrade) and come back
 // empty when its WAL is off. The gateway checks every minute and rebuilds.
 const VECTOR_STORE_WATCH_MS = parseInt(process.env.VECTOR_STORE_WATCH_MS || "60000", 10);
+const REINDEX_EMBED_ATTEMPTS = Math.max(1, parseInt(process.env.REINDEX_EMBED_ATTEMPTS || "5", 10) || 5);
 const REINDEX_BATCH_SIZE = parseInt(process.env.REINDEX_BATCH_SIZE || "64", 10);
 const REINDEX_FETCH_SIZE = parseInt(process.env.REINDEX_FETCH_SIZE || "256", 10);
 const REINDEX_SLEEP_MS = parseInt(process.env.REINDEX_SLEEP_MS || "0", 10);
@@ -4317,10 +4318,19 @@ async function reindexChunkBatch(rows) {
   // Embed exactly what indexDocument embeds (context + text) with the
   // instance's configured model, or a reindex would silently change vectors.
   const texts = rows.map((r) => (r.context ? `${r.context}\n\n${r.text}` : r.text));
-  const { vectors } = await embedTexts(texts, {
-    ...resolveInstanceEmbedConfig(),
-    taskType: "RETRIEVAL_DOCUMENT"
-  });
+  // A rebuild is thousands of calls; one timeout or rate limit must not
+  // abort it and leave the store half built.
+  let vectors;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      ({ vectors } = await embedTexts(texts, { ...resolveInstanceEmbedConfig(), taskType: "RETRIEVAL_DOCUMENT" }));
+      break;
+    } catch (err) {
+      if (attempt >= REINDEX_EMBED_ATTEMPTS) throw err;
+      console.warn(`[reindex] embedding batch failed (attempt ${attempt}/${REINDEX_EMBED_ATTEMPTS}), retrying: ${String(err?.message || err).slice(0, 160)}`);
+      await sleep(Math.min(30000, 1000 * 2 ** attempt));
+    }
+  }
   const commands = rows.map((row, index) => buildVset(row.chunk_id, vectors[index]));
   const results = await runBatchedCommandSet(commands, {
     batchSize: VECTOR_WRITE_BATCH_SIZE,
