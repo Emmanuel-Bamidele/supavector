@@ -20,6 +20,10 @@ const {
   normalizeStorageBreakdown
 } = require("./storage_billing");
 
+const { searchChunksBm25 } = require("./lexical_bm25");
+
+// "legacy" restores the old AND-of-every-word keyword query (rollback only).
+const LEXICAL_MODE = String(process.env.LEXICAL_MODE || "bm25").trim().toLowerCase() === "legacy" ? "legacy" : "bm25";
 const DB_CONNECT_TIMEOUT_MS = parseInt(process.env.DB_CONNECT_TIMEOUT_MS || "5000", 10);
 const DB_QUERY_TIMEOUT_MS = parseInt(process.env.DB_QUERY_TIMEOUT_MS || "15000", 10);
 const DB_STATEMENT_TIMEOUT_MS = parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || "15000", 10);
@@ -118,19 +122,21 @@ async function saveChunks(chunks, options = {}) {
   for (let offset = 0; offset < chunks.length; offset += batchSize) {
     const batch = chunks.slice(offset, offset + batchSize);
     await pool.query(
-      `INSERT INTO chunks(chunk_id, doc_id, idx, text)
+      `INSERT INTO chunks(chunk_id, doc_id, idx, text, context)
        SELECT *
-       FROM UNNEST($1::text[], $2::text[], $3::int[], $4::text[])
-         AS t(chunk_id, doc_id, idx, text)
+       FROM UNNEST($1::text[], $2::text[], $3::int[], $4::text[], $5::text[])
+         AS t(chunk_id, doc_id, idx, text, context)
        ON CONFLICT (chunk_id) DO UPDATE
-       SET doc_id = EXCLUDED.doc_id,
-           idx    = EXCLUDED.idx,
-           text   = EXCLUDED.text`,
+       SET doc_id  = EXCLUDED.doc_id,
+           idx     = EXCLUDED.idx,
+           text    = EXCLUDED.text,
+           context = EXCLUDED.context`,
       [
         batch.map((item) => item.chunkId),
         batch.map((item) => item.docId),
         batch.map((item) => item.idx),
-        batch.map((item) => item.text)
+        batch.map((item) => item.text),
+        batch.map((item) => item.context || null)
       ]
     );
   }
@@ -141,7 +147,7 @@ async function getChunksByIds(ids) {
   if (!ids || ids.length === 0) return new Map();
 
   const res = await pool.query(
-    `SELECT chunk_id, doc_id, idx, text
+    `SELECT chunk_id, doc_id, idx, text, context
      FROM chunks
      WHERE chunk_id = ANY($1)`,
     [ids]
@@ -197,6 +203,15 @@ async function searchChunksLexical({ tenantId, collection, query, limit, namespa
   const tenantPrefix = `${tenantId}::`;
   const collectionPrefix = collection ? `${tenantId}::${collection}::%` : null;
 
+  if (LEXICAL_MODE === "bm25") {
+    try {
+      return await searchChunksBm25(pool, { tenantPrefix, collectionPrefix, query: cleanQuery, limit: cleanLimit, namespacedDocIds });
+    } catch (err) {
+      // 42703 = search_tsv not migrated yet; keep serving with the legacy query.
+      if (err?.code !== "42703") throw err;
+    }
+  }
+
   try {
     return await runLexicalChunkQuery({
       tsQueryFn: "websearch_to_tsquery",
@@ -246,6 +261,71 @@ async function getChunksByDocIds(docIds) {
   return res.rows;
 }
 
+// Chunk ids only, for candidate scoping: search needs ids up front and text
+// only for the hits, which matters once every document in scope is a candidate.
+async function getChunkIdsByDocIds(docIds) {
+  if (!Array.isArray(docIds) || docIds.length === 0) return [];
+  const res = await pool.query(
+    `SELECT chunk_id
+     FROM chunks
+     WHERE doc_id = ANY($1)
+     ORDER BY doc_id ASC, idx ASC`,
+    [docIds]
+  );
+  return res.rows.map((row) => row.chunk_id);
+}
+
+async function saveDocText(namespaceId, text) {
+  await pool.query(
+    `INSERT INTO doc_texts(namespace_id, text, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (namespace_id) DO UPDATE SET text = EXCLUDED.text, updated_at = NOW()`,
+    [namespaceId, text]
+  );
+}
+
+/** Title and stored original text (null when indexed before texts were kept). */
+async function getDocExports(namespaceIds) {
+  if (!Array.isArray(namespaceIds) || namespaceIds.length === 0) return new Map();
+  const res = await pool.query(
+    `SELECT m.namespace_id, m.title, d.text
+     FROM memory_items m
+     LEFT JOIN doc_texts d ON d.namespace_id = m.namespace_id
+     WHERE m.namespace_id = ANY($1)`,
+    [namespaceIds]
+  );
+  return new Map(res.rows.map((row) => [row.namespace_id, row]));
+}
+
+/** Artifacts (documents) in id order, for re-ingestion; optional tenant/collection scope. */
+async function listArtifactsForReingest({ tenantId, collection, afterId, limit = 100 }) {
+  const clauses = ["item_type = 'artifact'"];
+  const params = [];
+  if (tenantId) { params.push(tenantId); clauses.push(`tenant_id = $${params.length}`); }
+  if (collection) { params.push(collection); clauses.push(`collection = $${params.length}`); }
+  if (afterId) { params.push(afterId); clauses.push(`id > $${params.length}`); }
+  params.push(Math.min(Math.max(1, Number(limit) || 100), 500));
+  const res = await pool.query(
+    `SELECT ${MEMORY_ITEM_SELECT_COLUMNS}
+     FROM memory_items
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY id
+     LIMIT $${params.length}`,
+    params
+  );
+  return res.rows;
+}
+
+/** Total chunk text length (chars) across documents. */
+async function sumChunkCharsForDocs(docIds) {
+  if (!Array.isArray(docIds) || docIds.length === 0) return 0;
+  const res = await pool.query(
+    "SELECT COALESCE(SUM(LENGTH(text)), 0)::bigint AS chars FROM chunks WHERE doc_id = ANY($1)",
+    [docIds]
+  );
+  return Number(res.rows[0]?.chars || 0);
+}
+
 // Delete all chunks for a docId
 async function deleteDoc(docId) {
   await pool.query(`DELETE FROM chunks WHERE doc_id = $1`, [docId]);
@@ -260,7 +340,7 @@ async function listChunksAfter({ afterId, limit }) {
   const cleanLimit = Number.isFinite(limit) && limit > 0 ? limit : 500;
   if (afterId) {
     const res = await pool.query(
-      `SELECT chunk_id, doc_id, idx, text
+      `SELECT chunk_id, doc_id, idx, text, context
        FROM chunks
        WHERE chunk_id > $1
        ORDER BY chunk_id
@@ -271,7 +351,7 @@ async function listChunksAfter({ afterId, limit }) {
   }
 
   const res = await pool.query(
-    `SELECT chunk_id, doc_id, idx, text
+    `SELECT chunk_id, doc_id, idx, text, context
      FROM chunks
      ORDER BY chunk_id
      LIMIT $1`,
@@ -3332,6 +3412,34 @@ async function runSqlWithMigrationLock(sql) {
   }
 }
 
+/**
+ * Keyword index upkeep that must not hold long locks, run after migrations:
+ * build the search_tsv GIN index CONCURRENTLY, then fill search_tsv for rows
+ * written before the trigger existed, a small batch at a time. Search works
+ * throughout; keyword matches for old rows appear as their batch lands.
+ */
+async function ensureSearchIndex({ batchSize = 1000, pauseMs = 50, log = console.log } = {}) {
+  try {
+    await pool.query("CREATE INDEX CONCURRENTLY IF NOT EXISTS chunks_search_tsv_idx ON chunks USING GIN (search_tsv)");
+  } catch (err) {
+    log(`[search-index] concurrent index build failed: ${err?.message || err}`);
+  }
+  let filled = 0;
+  for (;;) {
+    const res = await pool.query(
+      `UPDATE chunks
+          SET search_tsv = to_tsvector('english'::regconfig, coalesce(context, '') || ' ' || text)
+        WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE search_tsv IS NULL LIMIT $1)`,
+      [batchSize]
+    );
+    filled += res.rowCount || 0;
+    if (!res.rowCount) break;
+    await sleep(pauseMs);
+  }
+  if (filled) log(`[search-index] filled keyword vectors for ${filled} existing chunks`);
+  return filled;
+}
+
 async function runMigrations() {
   if (process.env.MIGRATIONS_AUTO === "0") return;
 
@@ -3368,6 +3476,12 @@ module.exports = {
   searchChunksLexical,
   getChunksByDocId,
   getChunksByDocIds,
+  getChunkIdsByDocIds,
+  ensureSearchIndex,
+  sumChunkCharsForDocs,
+  saveDocText,
+  getDocExports,
+  listArtifactsForReingest,
   deleteDoc,
   countChunks,
   listChunksAfter,

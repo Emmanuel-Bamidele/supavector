@@ -14,7 +14,10 @@ const { embedProviderTexts } = require("./provider_clients");
 
 const DEFAULT_BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE || "64", 10);
 const FALLBACK_DIM = parseInt(process.env.EMBED_FALLBACK_DIM || "1536", 10);
-const EMBED_FALLBACK_ON_ERROR = process.env.EMBED_FALLBACK_ON_ERROR !== "0";
+// Hash-based fallback vectors are for local runs and CI without a provider key
+// ONLY. Written into a live index they make documents unfindable by meaning,
+// silently, so they are off unless explicitly enabled with "1".
+const EMBED_FALLBACK_ON_ERROR = process.env.EMBED_FALLBACK_ON_ERROR === "1";
 const QUERY_EMBED_CACHE_TTL_MS = parseInt(process.env.QUERY_EMBED_CACHE_TTL_MS || "30000", 10);
 const QUERY_EMBED_CACHE_MAX_ITEMS = parseInt(process.env.QUERY_EMBED_CACHE_MAX_ITEMS || "256", 10);
 let fallbackWarned = false;

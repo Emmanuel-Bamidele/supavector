@@ -26,10 +26,23 @@ const {
   resolveMemoryKnowledgeType
 } = require("./retrieval_planner");
 const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVsearchAnnIn, buildVdel, buildVclear, parseVsearchReply } = require("./tcp");
+const { planRetrieval } = require("./query_rewrite");
+const { rerankCandidates, rerankEnabled, RERANK_CANDIDATES, RERANK_PROVIDER } = require("./rerank");
+const { buildChunkContexts } = require("./chunk_context");
+const { expandWithNeighbors, withPartCoverage } = require("./answer_context");
+const { joinChunkTexts } = require("./doc_text");
+const { createReingestJob } = require("./reingest");
 
 const {
   saveChunks,
   getChunksByDocIds,
+  getChunkIdsByDocIds,
+  getChunksByIds,
+  sumChunkCharsForDocs,
+  ensureSearchIndex,
+  saveDocText,
+  getDocExports,
+  listArtifactsForReingest,
   searchChunksLexical,
   getChunksByDocId,
   deleteDoc,
@@ -115,7 +128,7 @@ const {
 const { requireJwt, limiter, loginLimiter } = require("./security");
 const { generateAnswer, generateBooleanAskAnswer, generateCodeAnswer, normalizeCodeTask } = require("./answer");
 const { reflectMemories, summarizeMemories } = require("./memory_reflect");
-const { generateProviderText } = require("./provider_clients");
+const { generateProviderText, resolveProviderApiKey } = require("./provider_clients");
 const {
   DEFAULT_EMBED_PROVIDER,
   DEFAULT_EMBED_MODEL,
@@ -414,6 +427,7 @@ const TTL_SWEEP_BATCH_SIZE = parseInt(process.env.TTL_SWEEP_BATCH_SIZE || "200",
 const STORAGE_BILLING_ACCRUAL_INTERVAL_MS = parseInt(process.env.STORAGE_BILLING_ACCRUAL_INTERVAL_MS || "3600000", 10);
 const STORAGE_USAGE_SYNC_DEBOUNCE_MS = parseInt(process.env.STORAGE_USAGE_SYNC_DEBOUNCE_MS || "5000", 10);
 const DOCS_BULK_MAX_ITEMS = parseInt(process.env.DOCS_BULK_MAX_ITEMS || "250", 10);
+const DOCS_BULK_CONCURRENCY = Math.max(1, parseInt(process.env.DOCS_BULK_CONCURRENCY || "4", 10) || 4);
 const JOB_MAX_ATTEMPTS = parseInt(process.env.JOB_MAX_ATTEMPTS || "3", 10);
 const JOB_RETRY_BASE_MS = parseInt(process.env.JOB_RETRY_BASE_MS || "2000", 10);
 const JOB_RETRY_MAX_MS = parseInt(process.env.JOB_RETRY_MAX_MS || "30000", 10);
@@ -461,6 +475,11 @@ const MEMORY_RETRIEVAL_WARM_SELECTION = String(process.env.MEMORY_RETRIEVAL_WARM
   ? "lru"
   : "random";
 const MEMORY_RETRIEVAL_COLD_PROBE_EPSILON = parseInt(process.env.MEMORY_RETRIEVAL_COLD_PROBE_EPSILON || "0", 10);
+// "0" restores tier-sampled document retrieval (rollback switch only).
+const DOCUMENT_RETRIEVAL_FULL_SCOPE = process.env.DOCUMENT_RETRIEVAL_FULL_SCOPE !== "0";
+// Full-context answers for small scopes (0 = off). Chars of chunk text.
+const FULL_CONTEXT_MAX_CHARS = parseInt(process.env.FULL_CONTEXT_MAX_CHARS || "0", 10);
+const FULL_CONTEXT_MAX_DOCS = parseInt(process.env.FULL_CONTEXT_MAX_DOCS || "50", 10);
 const MEMORY_EVENT_FLUSH_INTERVAL_MS = parseInt(process.env.MEMORY_EVENT_FLUSH_INTERVAL_MS || "250", 10);
 const MEMORY_EVENT_FLUSH_MAX_EVENTS = parseInt(process.env.MEMORY_EVENT_FLUSH_MAX_EVENTS || "200", 10);
 const MEMORY_VALUE_DECAY_INTERVAL_MS = parseInt(process.env.MEMORY_VALUE_DECAY_INTERVAL_MS || "3600000", 10);
@@ -526,7 +545,13 @@ const VECTOR_ANN_SHADOW_SAMPLE_RATE = parseFloat(process.env.VECTOR_ANN_SHADOW_S
 const VECTOR_ANN_MIN_SHADOW_OVERLAP = parseFloat(process.env.VECTOR_ANN_MIN_SHADOW_OVERLAP || "0.8");
 const VECTOR_ANN_LOW_OVERLAP_LIMIT = parseInt(process.env.VECTOR_ANN_LOW_OVERLAP_LIMIT || "3", 10);
 const VECTOR_ANN_CIRCUIT_OPEN_MS = parseInt(process.env.VECTOR_ANN_CIRCUIT_OPEN_MS || "300000", 10);
-const CHUNK_STRATEGY = String(process.env.CHUNK_STRATEGY || "token").toLowerCase() === "char" ? "char" : "token";
+// "structured" (default) follows headings and sections with no overlap;
+// "token" and "char" are the previous fixed-window strategies.
+const CHUNK_STRATEGY = (() => {
+  const clean = String(process.env.CHUNK_STRATEGY || "structured").trim().toLowerCase();
+  return ["structured", "token", "char"].includes(clean) ? clean : "structured";
+})();
+const CHUNK_MAX_WORDS = parseInt(process.env.CHUNK_MAX_WORDS || "300", 10);
 const CHUNK_MAX_CHARS = parseInt(process.env.CHUNK_MAX_CHARS || "900", 10);
 const CHUNK_MAX_TOKENS = parseInt(process.env.CHUNK_MAX_TOKENS || "220", 10);
 const CHUNK_OVERLAP_TOKENS = parseInt(process.env.CHUNK_OVERLAP_TOKENS || "40", 10);
@@ -541,6 +566,9 @@ const HYBRID_LEXICAL_MULTIPLIER = parseInt(process.env.HYBRID_LEXICAL_MULTIPLIER
 const HYBRID_LEXICAL_CAP = parseInt(process.env.HYBRID_LEXICAL_CAP || "120", 10);
 const HYBRID_RERANK_OVERLAP_BOOST = parseFloat(process.env.HYBRID_RERANK_OVERLAP_BOOST || "0.12");
 const HYBRID_RERANK_EXACT_BOOST = parseFloat(process.env.HYBRID_RERANK_EXACT_BOOST || "0.08");
+const HYBRID_RRF_BOOST_SCALE = parseFloat(process.env.HYBRID_RRF_BOOST_SCALE || "1");
+// Reranker pool slots reserved for top keyword matches outside the fused head.
+const RERANK_LEXICAL_SLOTS = Math.max(0, parseInt(process.env.RERANK_LEXICAL_SLOTS || "10", 10) || 0);
 const MEMORY_RETRIEVAL_RECENCY_WEIGHT = parseFloat(process.env.MEMORY_RETRIEVAL_RECENCY_WEIGHT || "0.3");
 const MEMORY_RETRIEVAL_RECENCY_HALFLIFE_DAYS = parseFloat(process.env.MEMORY_RETRIEVAL_RECENCY_HALFLIFE_DAYS || "14");
 const RETRIEVAL_QUERY_RECENCY_AUTO_ENABLED = process.env.RETRIEVAL_QUERY_RECENCY_AUTO_ENABLED !== "0";
@@ -1423,6 +1451,13 @@ function parseOptionalString(raw, { label, max = 2000 } = {}) {
   return clean;
 }
 
+function truncateOptionalString(raw, max) {
+  if (raw === undefined || raw === null) return null;
+  const clean = String(raw).replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+  return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
+}
+
 function normalizeDocumentSourceType(raw, fallback = "text") {
   const clean = parseOptionalString(raw, { label: "sourceType", max: 80 });
   if (!clean) return fallback;
@@ -1884,7 +1919,9 @@ function parseDocumentSourceInput(body = {}, { defaultType = "text", defaultUrl 
     max: 4000
   });
   return {
-    title: parseOptionalString(body?.title, { label: "title", max: 200 }),
+    // A title is display metadata: shorten a long one rather than reject the
+    // whole document (a long file name used to fail indexing outright).
+    title: truncateOptionalString(body?.title, 200),
     metadata: metadata === undefined ? null : metadata,
     sourceType: normalizeDocumentSourceType(body?.sourceType ?? body?.source_type, defaultType),
     sourceUrl
@@ -4097,7 +4134,8 @@ function buildChunkRows(docId, chunks) {
     chunkId: chunk.chunkId,
     docId,
     idx,
-    text: chunk.text
+    text: chunk.text,
+    context: chunk.context || null
   }));
 }
 
@@ -4260,8 +4298,14 @@ function shouldReindexStoredVectors({ mode, totalChunks, vectorCount, vectorDims
 
 async function reindexChunkBatch(rows) {
   if (!rows.length) return;
-  const texts = rows.map(r => r.text);
-  const { vectors } = await embedTexts(texts);
+  // Embed exactly what indexDocument embeds (context + text) with the
+  // instance's configured model, or a reindex would silently change vectors.
+  const texts = rows.map((r) => (r.context ? `${r.context}\n\n${r.text}` : r.text));
+  const { vectors } = await embedTexts(texts, {
+    embedProvider: process.env.EMBED_PROVIDER || DEFAULT_EMBED_PROVIDER,
+    embedModel: process.env.EMBED_MODEL || DEFAULT_EMBED_MODEL,
+    taskType: "RETRIEVAL_DOCUMENT"
+  });
   const commands = rows.map((row, index) => buildVset(row.chunk_id, vectors[index]));
   const results = await runBatchedCommandSet(commands, {
     batchSize: VECTOR_WRITE_BATCH_SIZE,
@@ -4293,9 +4337,13 @@ async function reindexAllChunks(options = {}) {
     return;
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn("[reindex] OPENAI_API_KEY not set; skipping auto reindex.");
-    lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "missing_openai_api_key" };
+  // The key for the configured embedding provider, not always OpenAI's.
+  const reindexEmbedProvider = process.env.EMBED_PROVIDER || DEFAULT_EMBED_PROVIDER;
+  try {
+    resolveProviderApiKey(reindexEmbedProvider);
+  } catch {
+    console.warn(`[reindex] no API key for embedding provider ${reindexEmbedProvider}; skipping auto reindex.`);
+    lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "missing_embed_api_key" };
     return;
   }
 
@@ -4645,7 +4693,7 @@ function parseAnswerLength(raw) {
 function parseCitationMode(raw) {
   if (raw === undefined || raw === null || raw === "") return "inline";
   const clean = String(raw).trim().toLowerCase();
-  if (clean === "inline" || clean === "metadata") {
+  if (clean === "inline" || clean === "metadata" || clean === "numbered") {
     return clean;
   }
   return null;
@@ -5032,7 +5080,8 @@ function buildChunkingOptions() {
     strategy: CHUNK_STRATEGY,
     maxChars,
     maxTokens,
-    overlapTokens
+    overlapTokens,
+    maxWords: Number.isFinite(CHUNK_MAX_WORDS) && CHUNK_MAX_WORDS > 0 ? CHUNK_MAX_WORDS : 300
   };
 }
 
@@ -5720,7 +5769,29 @@ async function indexDocument(tenantId, collection, docId, text, source, options 
 
   logIndex(`chunked collection=${collection} docId=${docId} chunks=${chunks.length}`);
 
-  const texts = chunks.map(c => c.text);
+  // Each chunk is embedded with its context (document, section, and a
+  // generated situating line); the stored chunk text stays exactly as written.
+  const contextStart = Date.now();
+  const { contexts, usage: contextUsage, generated: contextsGenerated } = await buildChunkContexts({
+    title: source?.title || docId,
+    text: cleanText,
+    chunks,
+    metadata: sourceMetadata,
+    allowModel: sourceType !== "code" && options?.contextualize !== false
+  });
+  if (contextUsage) {
+    recordGenerationUsage(tenantId, contextUsage, buildTelemetryContext({
+      requestId: options?.telemetry?.requestId,
+      tenantId,
+      collection,
+      source: "chunk_context",
+      billable: false
+    }));
+  }
+  logIndex(`contexts collection=${collection} docId=${docId} generated=${contextsGenerated}/${chunks.length} ms=${Date.now() - contextStart}`);
+  chunks.forEach((chunk, index) => { chunk.context = contexts[index] || null; });
+
+  const texts = chunks.map((c) => (c.context ? `${c.context}\n\n${c.text}` : c.text));
   const embedStart = Date.now();
   const effectiveModels = options?.models || await getEffectiveTenantModels(tenantId);
   const { vectors, usage } = await embedTexts(texts, {
@@ -5744,6 +5815,10 @@ async function indexDocument(tenantId, collection, docId, text, source, options 
   const chunkRows = buildChunkRows(activeNamespaceId, chunks);
 
   await saveChunks(chunkRows, { batchSize: CHUNK_UPSERT_BATCH_SIZE });
+  // The original text makes export and future re-ingestion lossless.
+  await saveDocText(activeNamespaceId, cleanText).catch((err) => {
+    console.warn(`[index] could not store original text for ${docId}: ${err?.message || err}`);
+  });
 
   const vsetStart = Date.now();
   const vectorResults = await runBatchedCommandSet(
@@ -5778,7 +5853,7 @@ async function indexDocument(tenantId, collection, docId, text, source, options 
   return { chunksIndexed: chunks.length, truncated };
 }
 
-async function listDocsForTenant(tenantId, collection, principalId, privileges) {
+async function listDocsForTenant(tenantId, collection, principalId, privileges, { withNamespace = false } = {}) {
   const rows = await listDocsByTenant(tenantId, principalId, privileges);
   const docs = [];
   for (const row of rows) {
@@ -5788,10 +5863,27 @@ async function listDocsForTenant(tenantId, collection, principalId, privileges) 
     docs.push({
       docId: parsed.docId,
       collection: parsed.collection,
-      chunks: Number(row.chunks || 0)
+      chunks: Number(row.chunks || 0),
+      ...(withNamespace ? { namespaceId: row.doc_id } : {})
     });
   }
   return docs;
+}
+
+/** Attach title and whole text to a page of listed docs (stored text, else rebuilt from chunks). */
+async function attachDocTexts(docs) {
+  const exports = await getDocExports(docs.map((doc) => doc.namespaceId));
+  const out = [];
+  for (const doc of docs) {
+    const row = exports.get(doc.namespaceId);
+    let text = row?.text || null;
+    if (!text) {
+      const chunks = await getChunksByDocId(doc.namespaceId);
+      text = joinChunkTexts(chunks.map((chunk) => chunk.text)) || null;
+    }
+    out.push({ ...doc, title: row?.title || undefined, text });
+  }
+  return out;
 }
 
 function sampleItems(items, size) {
@@ -5882,6 +5974,40 @@ async function getTierBoundedRetrievalSet({
     : (Array.isArray(docIds) && docIds.length && collection ? docIds.map((docId) => namespaceDocId(tenantId, collection, docId)) : []);
   const directExternalIds = Array.isArray(docIds) && docIds.length && !directNamespaceIds.length ? docIds : [];
   const warmSelectionMode = preferFreshnessOrdering ? "freshness" : policyConfig.retrievalWarmSelection;
+
+  // Documents are knowledge an owner chose to upload, so every one in scope is
+  // searchable. HOT/WARM/COLD sampling exists for memories, where forgetting
+  // helps; applied to documents it hid all but ~8 random WARM docs per query
+  // and let unused docs decay out of reach for good.
+  if (DOCUMENT_RETRIEVAL_FULL_SCOPE && typeFilter && typeFilter.every((type) => type === "artifact")) {
+    const documents = await listMemoryItemsByTier({
+      tenantId,
+      collection,
+      namespaceIds: directNamespaceIds.length ? directNamespaceIds : null,
+      externalIds: directExternalIds.length ? directExternalIds : null,
+      tier: null,
+      types: typeFilter,
+      sourceTypes,
+      documentTypes,
+      since,
+      until,
+      timeField,
+      excludeExpired: true,
+      principalId,
+      privileges,
+      agentId,
+      tags,
+      sample: preferFreshnessOrdering ? "freshness" : null
+    });
+    return {
+      hot: documents,
+      warm: [],
+      cold: [],
+      hotCount: documents.length,
+      warmCount: 0,
+      coldCandidates: 0
+    };
+  }
 
   if (directNamespaceIds.length || directExternalIds.length) {
     const hot = await listMemoryItemsByTier({
@@ -6011,7 +6137,8 @@ async function searchChunks({
   favorRecency,
   apiKey,
   embedProvider,
-  embedModel
+  embedModel,
+  rerank = false
 }) {
   const telemetryContext = buildTelemetryContext({
     requestId: telemetry?.requestId,
@@ -6019,6 +6146,9 @@ async function searchChunks({
     collection,
     source: telemetry?.source || "search_query"
   });
+  // Interactive document searches widen their pools so the reranker has a
+  // real choice; background memory jobs never pay for reranking.
+  const rerankPool = rerank && rerankEnabled() ? RERANK_CANDIDATES : 0;
   const policyConfig = resolveMemoryPolicyConfig(policy);
   const effectiveModels = (embedModel || embedProvider)
     ? {
@@ -6115,12 +6245,8 @@ async function searchChunks({
     return [];
   }
 
-  const candidateChunks = await getChunksByDocIds(candidateNamespaceIds);
-  const candidateChunkIds = candidateChunks.map((row) => row.chunk_id).filter(Boolean);
-  const denseChunkMap = new Map();
-  for (const row of candidateChunks) {
-    denseChunkMap.set(row.chunk_id, row);
-  }
+  // Ids only here; text is loaded for the dense hits after the vector search.
+  const candidateChunkIds = (await getChunkIdsByDocIds(candidateNamespaceIds)).filter(Boolean);
   const vectorSearchScannedCount = candidateChunkIds.length;
   if (!vectorSearchScannedCount) {
     emitTelemetry("memory_candidates", telemetryContext, {
@@ -6159,7 +6285,7 @@ async function searchChunks({
   const multiplier = Number.isFinite(TENANT_SEARCH_MULTIPLIER) && TENANT_SEARCH_MULTIPLIER > 0 ? TENANT_SEARCH_MULTIPLIER : 5;
   const cap = Number.isFinite(TENANT_SEARCH_CAP) && TENANT_SEARCH_CAP > 0 ? TENANT_SEARCH_CAP : 50;
   const hasDocFilter = cleanDocIds.length > 0;
-  const internalK = Math.min(topK * multiplier * (hasDocFilter ? 2 : 1), cap);
+  const internalK = Math.max(Math.min(topK * multiplier * (hasDocFilter ? 2 : 1), cap), rerankPool);
   const scopedK = Math.max(1, Math.min(internalK, vectorSearchScannedCount));
   const annCandidateThreshold = Number.isFinite(VECTOR_ANN_MIN_CANDIDATES) && VECTOR_ANN_MIN_CANDIDATES > 0
     ? VECTOR_ANN_MIN_CANDIDATES
@@ -6268,6 +6394,7 @@ async function searchChunks({
       vectorSearchModeUsed = "exact_fallback";
     }
   }
+  const denseChunkMap = await getChunksByIds(denseMatches.map((match) => match.id).filter(Boolean));
   const denseSearchMs = elapsedMsSince(denseSearchStarted);
   const docFilter = hasDocFilter ? new Set(cleanDocIds) : null;
   const namespacedDocIds = candidateNamespaceIds;
@@ -6278,7 +6405,7 @@ async function searchChunks({
   const lexicalCap = Number.isFinite(HYBRID_LEXICAL_CAP) && HYBRID_LEXICAL_CAP > 0
     ? HYBRID_LEXICAL_CAP
     : 120;
-  const lexicalK = Math.min(topK * lexicalMultiplier, lexicalCap);
+  const lexicalK = Math.max(Math.min(topK * lexicalMultiplier, lexicalCap), rerankPool);
 
   let lexicalRows = [];
   const lexicalSearchStarted = process.hrtime.bigint();
@@ -6365,6 +6492,7 @@ async function searchChunks({
     rankConstant: HYBRID_RRF_K,
     overlapBoostScale: HYBRID_RERANK_OVERLAP_BOOST,
     exactBoostScale: HYBRID_RERANK_EXACT_BOOST,
+    rrfBoostScale: HYBRID_RRF_BOOST_SCALE,
     favorRecency: retrievalPlan.effectiveFavorRecency,
     candidateTypes,
     recencyWeight: MEMORY_RETRIEVAL_RECENCY_WEIGHT,
@@ -6404,11 +6532,46 @@ async function searchChunks({
   recordVectorSearchRuntime(vectorSearchPayload);
   emitTelemetry("vector_search", telemetryContext, vectorSearchPayload);
 
-  const results = ranked.slice(0, topK).map((candidate) => ({
+  let finalRanked = ranked;
+  if (rerankPool) {
+    // The reranker sees the fused head plus guaranteed slots for the best
+    // keyword matches the fusion left below it, so exact-term evidence (names,
+    // outlets, codes) reaches it whatever the fusion order.
+    const lexicalSlots = Math.min(RERANK_LEXICAL_SLOTS, Math.floor(rerankPool / 2));
+    const head = ranked.slice(0, rerankPool - lexicalSlots);
+    const inHead = new Set(head.map((candidate) => candidate.row.chunk_id));
+    const lexicalPicks = ranked
+      .filter((candidate) => Number.isFinite(candidate.lexicalRank) && !inHead.has(candidate.row.chunk_id))
+      .sort((a, b) => a.lexicalRank - b.lexicalRank)
+      .slice(0, lexicalSlots);
+    const picked = new Set([...inHead, ...lexicalPicks.map((candidate) => candidate.row.chunk_id)]);
+    const pool = [...head, ...lexicalPicks, ...ranked.filter((candidate) => !picked.has(candidate.row.chunk_id))];
+    const reranked = await rerankCandidates(query, pool, {
+      textOf: (candidate) => [candidate?.row?.context, candidate?.row?.text].filter(Boolean).join("\n")
+    });
+    finalRanked = reranked.candidates;
+    if (reranked.usage) {
+      recordGenerationUsage(tenantId, reranked.usage, buildTelemetryContext({
+        requestId: telemetryContext.requestId,
+        tenantId,
+        collection,
+        source: "rerank"
+      }));
+    }
+    if (reranked.error) console.warn("[search] rerank skipped:", reranked.error);
+  }
+
+  // `score` orders results within this query (higher is better; not
+  // comparable across queries). `similarity` is the cosine similarity of the
+  // dense match, null for keyword-only hits — use it to compare meaning.
+  const results = finalRanked.slice(0, topK).map((candidate) => ({
     chunkId: stripChunkNamespace(candidate.row.chunk_id),
-    score: candidate.finalScore,
+    score: Number.isFinite(candidate.rerankScore) ? candidate.rerankScore : candidate.finalScore,
+    similarity: Number.isFinite(candidate.vectorScore) ? candidate.vectorScore : null,
     docId: candidate.parsed.docId,
     collection: candidate.parsed.collection,
+    title: candidate.memory?.title || null,
+    url: candidate.memory?.source_url || null,
     preview: buildSearchPreview(candidate.row.text, query, 180),
     _row: candidate.row
   }));
@@ -7227,10 +7390,61 @@ function buildCodeRelationshipSummary(files = [], options = {}) {
   };
 }
 
+// Full-context mode: when everything this caller may see is small enough,
+// every chunk goes to the answer model in document order and nothing can be
+// missed by retrieval. Same visibility and filters as search. Off unless
+// FULL_CONTEXT_MAX_CHARS is set.
+async function loadFullContextChunks({
+  tenantId, collection, docIds, namespaceIds, principalId, privileges,
+  tags, agentId, sourceTypes, documentTypes, since, until, timeField
+}) {
+  if (!(FULL_CONTEXT_MAX_CHARS > 0) || !collection) return null;
+  const directNamespaceIds = Array.isArray(namespaceIds) && namespaceIds.length
+    ? namespaceIds
+    : (Array.isArray(docIds) && docIds.length ? docIds.map((docId) => namespaceDocId(tenantId, collection, docId)) : null);
+  const items = await listMemoryItemsByTier({
+    tenantId,
+    collection,
+    namespaceIds: directNamespaceIds,
+    tier: null,
+    types: ["artifact"],
+    sourceTypes,
+    documentTypes,
+    since,
+    until,
+    timeField,
+    excludeExpired: true,
+    principalId,
+    privileges,
+    agentId,
+    tags
+  });
+  if (!items.length || items.length > FULL_CONTEXT_MAX_DOCS) return null;
+  const totalChars = await sumChunkCharsForDocs(items.map((item) => item.namespace_id));
+  if (!totalChars || totalChars > FULL_CONTEXT_MAX_CHARS) return null;
+  const byNamespace = new Map(items.map((item) => [item.namespace_id, item]));
+  const rows = await getChunksByDocIds(items.map((item) => item.namespace_id));
+  const chunks = rows.map((row) => {
+    const memory = byNamespace.get(row.doc_id);
+    return {
+      ...row,
+      _retrieval_score: null,
+      memory_id: memory?.id || null,
+      memory_type: memory?.item_type || null,
+      title: memory?.title || null,
+      source_url: memory?.source_url || null,
+      source_created_at: memory?.created_at || null,
+      source_updated_at: memory?.metadata?.updated_at || memory?.metadata?.updatedAt || null
+    };
+  });
+  return { chunks, items };
+}
+
 async function buildAnswerContext({
   tenantId,
   collection,
   question,
+  subqueries = [],
   k,
   docIds,
   namespaceIds,
@@ -7259,11 +7473,11 @@ async function buildAnswerContext({
     source: telemetry?.source || operation
   });
 
-  const results = await searchChunks({
+  const search = (query, searchK, rerank) => searchChunks({
     tenantId,
     collection,
-    query: question,
-    k,
+    query,
+    k: searchK,
     docIds,
     namespaceIds,
     principalId,
@@ -7282,6 +7496,7 @@ async function buildAnswerContext({
     apiKey,
     embedProvider,
     embedModel,
+    rerank,
     telemetry: buildTelemetryContext({
       requestId: telemetryContext.requestId,
       tenantId,
@@ -7289,6 +7504,55 @@ async function buildAnswerContext({
       source: retrievalSource || "answer_retrieval_query"
     })
   });
+  const topK = Number.isFinite(k) && k > 0 ? k : 7;
+  const fullContext = await loadFullContextChunks({
+    tenantId, collection, docIds, namespaceIds, principalId, privileges,
+    tags, agentId, sourceTypes, documentTypes, since, until, timeField
+  });
+  if (fullContext) {
+    emitTelemetry("memory_retrieval", telemetryContext, {
+      operation,
+      mode: "full_context",
+      query_chars: String(question || "").length,
+      retrieved_count: fullContext.chunks.length
+    });
+    return { telemetryContext, usedItems: fullContext.items, chunks: fullContext.chunks };
+  }
+  let results;
+  if (Array.isArray(subqueries) && subqueries.length > 1) {
+    // Deep path: each part of the question searched on its own, merged by
+    // reciprocal rank, then reranked against the whole question. Multi-part
+    // answers get a few more passages to work from, and each part keeps its
+    // best passage.
+    const lists = await Promise.all([question, ...subqueries].map((query) => search(query, Math.max(topK, 8), false)));
+    const fused = new Map();
+    for (const list of lists) {
+      list.forEach((result, rank) => {
+        const entry = fused.get(result._row.chunk_id) || { result, score: 0 };
+        entry.score += 1 / (60 + rank + 1);
+        fused.set(result._row.chunk_id, entry);
+      });
+    }
+    const merged = [...fused.values()].sort((a, b) => b.score - a.score).map((entry) => ({ ...entry.result, row: entry.result._row }));
+    const reranked = await rerankCandidates(question, merged, {
+      textOf: (candidate) => [candidate?.row?.context, candidate?.row?.text].filter(Boolean).join("\n")
+    });
+    if (reranked.usage) {
+      recordGenerationUsage(tenantId, reranked.usage, buildTelemetryContext({
+        requestId: telemetryContext.requestId,
+        tenantId,
+        collection,
+        source: "rerank"
+      }));
+    }
+    const chosen = reranked.candidates.slice(0, Math.max(topK, 10)).map(({ row, rerankScore, ...result }) => ({
+      ...result,
+      score: Number.isFinite(rerankScore) ? rerankScore : result.score
+    }));
+    results = withPartCoverage(chosen, lists.slice(1), (result) => result._row.chunk_id);
+  } else {
+    results = await search(question, topK, true);
+  }
 
   let memoryMap = new Map();
   const usedItems = [];
@@ -7356,6 +7620,7 @@ async function buildAnswerContext({
       memory_id: memory?.id || null,
       memory_type: memory?.item_type || null,
       title: memory?.title || null,
+      source_url: memory?.source_url || null,
       source_created_at: memory?.created_at || null,
       source_updated_at: memory?.metadata?.updated_at || memory?.metadata?.updatedAt || null
     };
@@ -7364,7 +7629,7 @@ async function buildAnswerContext({
   return {
     telemetryContext,
     usedItems,
-    chunks
+    chunks: await expandWithNeighbors(chunks, getChunksByIds)
   };
 }
 
@@ -7627,16 +7892,25 @@ function collectInjectedMemoryItems(usedItems, injectedMemoryIds) {
   return injectedItems;
 }
 
-function mapAnswerCitations(citations) {
-  return citations.map((c) => {
+// citations[k-1] is the source behind marker [k] in numbered mode. Title, url
+// and snippet are additive: they let any client show and link a source
+// without a second lookup.
+function mapAnswerCitations(citations, shownChunks = [], question = "") {
+  const byId = new Map((Array.isArray(shownChunks) ? shownChunks : []).map((chunk) => [chunk?.chunk_id, chunk]));
+  return citations.map((c, index) => {
     const parsed = parseChunkId(c);
     if (!parsed) {
       return { chunkId: c, docId: null, collection: null };
     }
+    const chunk = byId.get(c);
     return {
+      n: index + 1,
       chunkId: stripChunkNamespace(c),
       docId: parsed.docId,
-      collection: parsed.collection
+      collection: parsed.collection,
+      title: chunk?.title || undefined,
+      url: chunk?.source_url || undefined,
+      snippet: (chunk?.hit_text || chunk?.text) ? buildSearchPreview(chunk.hit_text || chunk.text, question, 240) : undefined
     };
   });
 }
@@ -7733,7 +8007,8 @@ async function answerQuestion({
   embedApiKey,
   model,
   provider,
-  models
+  models,
+  onToken
 }) {
   const effectiveModels = models || await getEffectiveTenantModels(tenantId);
   const requestedAnswerConfig = resolveRequestedGenerationConfig({
@@ -7742,6 +8017,14 @@ async function answerQuestion({
     fallbackProvider: effectiveModels.answerProvider,
     fallbackModel: effectiveModels.answerModel
   });
+  // Follow-ups are searched as standalone questions and multi-part questions
+  // one part at a time; the answer model still sees the visitor's own words.
+  const rewrite = await planRetrieval({
+    question,
+    history,
+    answerProvider: requestedAnswerConfig.provider,
+    answerApiKey: generationApiKey
+  });
   const {
     telemetryContext,
     usedItems,
@@ -7749,7 +8032,8 @@ async function answerQuestion({
   } = await buildAnswerContext({
     tenantId,
     collection,
-    question,
+    question: rewrite.query,
+    subqueries: rewrite.subqueries,
     k,
     docIds,
     namespaceIds,
@@ -7771,6 +8055,15 @@ async function answerQuestion({
     operation: "answer_question",
     retrievalSource: "answer_retrieval_query"
   });
+  if (rewrite.usage) {
+    recordGenerationUsage(tenantId, rewrite.usage, buildTelemetryContext({
+      requestId: telemetryContext.requestId,
+      tenantId,
+      collection,
+      source: "query_rewrite",
+      billable: generationBillable
+    }));
+  }
 
   const injectedMemoryIds = new Set();
   const { answer, citations, usage, answerLength: resolvedAnswerLength, selectedChunks } = await generateAnswer(question, chunks, {
@@ -7783,6 +8076,7 @@ async function answerQuestion({
     history,
     background,
     persona,
+    onToken,
     onPromptBuilt: (promptStats) => {
       const memoryIds = [];
       const seen = new Set();
@@ -7837,12 +8131,13 @@ async function answerQuestion({
 
   return {
     answer,
-    citations: mapAnswerCitations(citations),
+    citations: mapAnswerCitations(citations, Array.isArray(selectedChunks) ? selectedChunks : chunks, question),
     chunksUsed: Array.isArray(selectedChunks) ? selectedChunks.length : chunks.length,
     supportingChunks: mapSupportingChunks(Array.isArray(selectedChunks) ? selectedChunks : chunks),
     answerLength: resolvedAnswerLength || answerLength || "auto",
     provider: requestedAnswerConfig.provider,
-    model: requestedAnswerConfig.model
+    model: requestedAnswerConfig.model,
+    retrievalQuery: rewrite.rewritten ? rewrite.query : undefined
   };
 }
 
@@ -10580,7 +10875,9 @@ async function computeRedundancyForItem(item) {
     const mem = memoryMap.get(r._row.doc_id);
     if (!mem || seen.has(mem.id)) continue;
     seen.add(mem.id);
-    scores.push(r.score);
+    // Redundancy is about meaning, so it needs the cosine similarity; the
+    // ranking score is a fused rank number on a different scale.
+    if (Number.isFinite(r.similarity)) scores.push(r.similarity);
     if (scores.length >= MEMORY_REDUNDANCY_TOP_K) break;
   }
 
@@ -10893,6 +11190,23 @@ app.get("/health", async (req, res) => {
   }
 });
 
+// What this gateway can do, so callers enable newer contracts only where they
+// exist (customer-hosted gateways may be older). Named "features" so it never
+// collides with the registration-time "capabilities" callers already store.
+const GATEWAY_VERSION = require("./package.json").version;
+function gatewayFeatures() {
+  return {
+    numberedCitations: true,
+    searchText: true,
+    docTextExport: true,
+    reingest: true,
+    queryRewrite: true,
+    bm25: true,
+    rerank: rerankEnabled(),
+    structuredChunks: CHUNK_STRATEGY === "structured"
+  };
+}
+
 app.get("/v1/health", async (req, res) => {
   try {
     const reply = await sendCmd("PING");
@@ -10900,7 +11214,7 @@ app.get("/v1/health", async (req, res) => {
       ok: false,
       error: String(err?.message || err)
     }));
-    sendOk(res, { status: "ok", tcp: reply, vector }, null, null);
+    sendOk(res, { status: "ok", version: GATEWAY_VERSION, features: gatewayFeatures(), tcp: reply, vector }, null, null);
   } catch (e) {
     sendError(res, 500, e, "HEALTH_CHECK_FAILED", null, null);
   }
@@ -12479,7 +12793,34 @@ app.get(["/admin/vector/search-runtime", "/v1/admin/vector/search-runtime"], req
   }
 });
 
-app.post(["/admin/vector/reindex", "/v1/admin/vector/reindex"], requireJwt, requireAdmin, async (req, res) => {
+// Re-ingest documents onto the current pipeline (chunking, context,
+// embeddings) one document at a time; search stays up throughout.
+const reingestJob = createReingestJob({
+  listArtifacts: listArtifactsForReingest,
+  getDocExports,
+  getChunksByDocId,
+  indexDocument: (...args) => indexDocument(...args)
+});
+
+app.get("/v1/admin/reingest", requireJwt, requireInstanceAdmin, (req, res) => {
+  sendOk(res, reingestJob.status(), null, null);
+});
+
+app.post("/v1/admin/reingest", requireJwt, requireInstanceAdmin, (req, res) => {
+  const body = req.body || {};
+  const tenantId = body.tenantId ? String(body.tenantId).trim() : null;
+  const collection = body.collection ? String(body.collection).trim() : null;
+  if ((tenantId && !TENANT_RE.test(tenantId)) || (collection && !COLLECTION_RE.test(collection))) {
+    return sendError(res, 400, "tenantId and collection must be plain identifiers", "INVALID_INPUT", null, null);
+  }
+  const concurrency = Math.min(8, Math.max(1, parseInt(body.concurrency || "2", 10) || 2));
+  const result = reingestJob.start({ tenantId, collection, concurrency });
+  sendOk(res, result, tenantId, collection);
+});
+
+// Instance admin only: a reindex clears and rebuilds EVERY tenant's vectors,
+// so a tenant-level admin token must not be able to start one.
+app.post(["/admin/vector/reindex", "/v1/admin/vector/reindex"], requireJwt, requireInstanceAdmin, async (req, res) => {
   let tenantId = null;
   try {
     tenantId = resolveTenantId(req);
@@ -12932,8 +13273,23 @@ app.get("/v1/docs", requireJwt, requireRole("reader"), async (req, res) => {
     tenantId = resolveTenantId(req);
     const access = resolveAccessContext(req);
     collection = resolveCollection(req);
-    const docs = await listDocsForTenant(tenantId, collection, access.principalId, access.privileges);
-    sendOk(res, { docs, totalDocs: docs.length }, tenantId, collection);
+    const allDocs = await listDocsForTenant(tenantId, collection, access.principalId, access.privileges, { withNamespace: true });
+    const includeText = ["1", "true", "yes"].includes(String(req.query?.includeText || "").trim().toLowerCase());
+    if (!includeText) {
+      sendOk(res, { docs: allDocs.map(({ namespaceId, ...doc }) => doc), totalDocs: allDocs.length }, tenantId, collection);
+      return;
+    }
+    // Whole texts can be large, so they come in pages; follow nextOffset.
+    const offset = Math.max(0, parseInt(req.query?.offset || "0", 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query?.limit || "200", 10) || 200));
+    const page = await attachDocTexts(allDocs.slice(offset, offset + limit));
+    const nextOffset = offset + limit < allDocs.length ? offset + limit : null;
+    sendOk(res, {
+      docs: page.map(({ namespaceId, ...doc }) => doc),
+      totalDocs: allDocs.length,
+      offset,
+      nextOffset
+    }, tenantId, collection);
   } catch (e) {
     sendError(res, 400, e, "DOCS_LIST_FAILED", tenantId, collection);
   }
@@ -13065,32 +13421,36 @@ app.post("/v1/docs/bulk", requireJwt, requireRole("indexer"), async (req, res) =
     principalId,
     endpoint: "v1/docs/bulk",
     handler: async () => {
-      const results = [];
+      // Documents in a batch are independent, so they index a few at a time
+      // (embedding is network-bound); results stay in request order.
+      const results = new Array(documents.length);
       let succeeded = 0;
       let failed = 0;
-      for (let index = 0; index < documents.length; index += 1) {
-        const document = documents[index];
-        try {
-          const indexed = await indexDocumentRequestBody({
-            tenantId,
-            collection,
-            principalId,
-            embedConfig,
-            body: document,
-            telemetrySource: "docs_bulk_index_v1",
-            requestId: req.requestId ? `${req.requestId}:${index}` : null
-          });
-          results.push({
-            index,
-            ok: true,
-            ...indexed
-          });
-          succeeded += 1;
-        } catch (err) {
-          results.push(buildBulkDocumentFailure(index, document, err, tenantId, collection));
-          failed += 1;
+      let next = 0;
+      const lane = async () => {
+        while (next < documents.length) {
+          const index = next++;
+          const document = documents[index];
+          try {
+            const indexed = await indexDocumentRequestBody({
+              tenantId,
+              collection,
+              principalId,
+              embedConfig,
+              body: document,
+              telemetrySource: "docs_bulk_index_v1",
+              requestId: req.requestId ? `${req.requestId}:${index}` : null
+            });
+            results[index] = { index, ok: true, ...indexed };
+            succeeded += 1;
+          } catch (err) {
+            results[index] = buildBulkDocumentFailure(index, document, err, tenantId, collection);
+            failed += 1;
+          }
         }
-      }
+      };
+      const lanes = Math.max(1, Math.min(DOCS_BULK_CONCURRENCY, documents.length));
+      await Promise.all(Array.from({ length: lanes }, lane));
       return {
         status: 200,
         payload: buildOkPayload({
@@ -13308,7 +13668,7 @@ app.post("/ask", requireJwt, requireRole("reader"), async (req, res) => {
     return res.status(400).json({ error: "answerLength must be one of: auto, short, medium, long" });
   }
   if (!citationMode) {
-    return res.status(400).json({ error: "citationMode must be one of: inline, metadata" });
+    return res.status(400).json({ error: "citationMode must be one of: inline, metadata, numbered" });
   }
 
   try {
@@ -13396,7 +13756,7 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
     return sendError(res, 400, "answerLength must be one of: auto, short, medium, long", "INVALID_INPUT", null, null);
   }
   if (!citationMode) {
-    return sendError(res, 400, "citationMode must be one of: inline, metadata", "INVALID_INPUT", null, null);
+    return sendError(res, 400, "citationMode must be one of: inline, metadata, numbered", "INVALID_INPUT", null, null);
   }
 
   let history = [];
@@ -13431,7 +13791,26 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       fallbackModel: effectiveModels.answerModel
     });
     const generationApiKey = resolveProviderApiKeyOverride(req, generationConfig.provider);
-    const result = await answerQuestion({
+    // Streaming: `delta` events as tokens arrive, then one `answer` event with
+    // the same payload the JSON response carries (citations renumbered), then
+    // `done`. Deltas are provisional; the final answer replaces them.
+    const stream = req.body?.stream === true || String(req.headers.accept || "").includes("text/event-stream");
+    let heartbeat = null;
+    if (stream) {
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      });
+      res.write("event: start\ndata: {}\n\n");
+      heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15000);
+    }
+    const sendEvent = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    let result;
+    try {
+      result = await answerQuestion({
+      onToken: stream ? async (delta) => sendEvent("delta", { text: String(delta || "") }) : undefined,
       tenantId,
       collection,
       question,
@@ -13467,8 +13846,14 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
         collection,
         source: "ask_v1"
       })
-    });
-    sendOk(res, {
+      });
+    } catch (err) {
+      if (!stream) throw err;
+      clearInterval(heartbeat);
+      sendEvent("error", { message: String(err?.message || err), code: "ASK_FAILED", status: 400 });
+      return res.end();
+    }
+    const payload = {
       question,
       answer: result.answer,
       citations: result.citations,
@@ -13477,11 +13862,23 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       answerLength: result.answerLength,
       provider: result.provider,
       model: result.model,
+      retrievalQuery: result.retrievalQuery,
       k,
       favorRecency: favorRecency === null ? undefined : favorRecency,
       timeField: retrievalFilters.timeField
-    }, tenantId, collection);
+    };
+    if (stream) {
+      clearInterval(heartbeat);
+      sendEvent("answer", payload);
+      sendEvent("done", {});
+      return res.end();
+    }
+    sendOk(res, payload, tenantId, collection);
   } catch (e) {
+    if (res.headersSent) {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: String(e?.message || e), code: "ASK_FAILED", status: 400 })}\n\n`);
+      return res.end();
+    }
     sendError(res, 400, e, "ASK_FAILED", tenantId, collection);
   }
 });
@@ -13495,7 +13892,7 @@ app.post("/code", requireJwt, requireRole("reader"), async (req, res) => {
     return res.status(400).json({ error: "answerLength must be one of: auto, short, medium, long" });
   }
   if (!input.citationMode) {
-    return res.status(400).json({ error: "citationMode must be one of: inline, metadata" });
+    return res.status(400).json({ error: "citationMode must be one of: inline, metadata, numbered" });
   }
 
   try {
@@ -13587,7 +13984,7 @@ app.post("/v1/code", requireJwt, requireRole("reader"), async (req, res) => {
     return sendError(res, 400, "answerLength must be one of: auto, short, medium, long", "INVALID_INPUT", null, null);
   }
   if (!input.citationMode) {
-    return sendError(res, 400, "citationMode must be one of: inline, metadata", "INVALID_INPUT", null, null);
+    return sendError(res, 400, "citationMode must be one of: inline, metadata, numbered", "INVALID_INPUT", null, null);
   }
 
   let tenantId = null;
@@ -14043,6 +14440,7 @@ app.get("/search", requireJwt, requireRole("reader"), async (req, res) => {
 app.get("/v1/search", requireJwt, requireRole("reader"), async (req, res) => {
   const q = String(req.query.q || "").trim();
   const k = parseInt(req.query.k || "5", 10);
+  const includeText = ["1", "true", "yes"].includes(String(req.query.includeText || "").trim().toLowerCase());
   const docIds = parseDocFilter(req.query.docIds || req.query.docs);
 
   let tenantId = null;
@@ -14084,6 +14482,11 @@ app.get("/v1/search", requireJwt, requireRole("reader"), async (req, res) => {
       since: retrievalFilters.since,
       until: retrievalFilters.until,
       timeField: retrievalFilters.timeField,
+      // Explicit rerank=1/0 wins. By default only a hosted cross-encoder
+      // reranks here (fast, cheap); the LLM reranker is reserved for answers
+      // and callers that ask, since some callers search several times a turn.
+      rerank: ["1", "true"].includes(String(req.query?.rerank || "").toLowerCase())
+        || (!["0", "false"].includes(String(req.query?.rerank || "").toLowerCase()) && RERANK_PROVIDER !== "openai"),
       telemetry: buildTelemetryContext({
         requestId: req.requestId,
         tenantId,
@@ -14096,9 +14499,14 @@ app.get("/v1/search", requireJwt, requireRole("reader"), async (req, res) => {
       results: results.map(r => ({
         chunkId: r.chunkId,
         score: r.score,
+        similarity: r.similarity,
         docId: r.docId,
         collection: r.collection,
-        preview: r.preview
+        title: r.title || undefined,
+        url: r.url || undefined,
+        preview: r.preview,
+        // Whole passage on request (voice tools, custom answerers).
+        ...(includeText ? { text: r._row?.text || "", context: r._row?.context || undefined } : {})
       })),
       favorRecency: favorRecency === null ? undefined : favorRecency,
       timeField: retrievalFilters.timeField
@@ -15254,11 +15662,14 @@ app.use("/v1", handleV1RouteNotFound);
 async function start() {
   try {
     await runMigrations();
+    // Long-running index upkeep stays off the startup path.
+    ensureSearchIndex().catch((err) => console.warn("[search-index] upkeep failed:", err?.message || err));
     if (typeof portalPluginReady === "function") {
       await portalPluginReady();
     }
-    app.listen(3000, () => {
-      console.log("HTTP gateway listening on http://localhost:3000");
+    const listenPort = parseInt(process.env.GATEWAY_PORT || "3000", 10) || 3000;
+    app.listen(listenPort, () => {
+      console.log(`HTTP gateway listening on http://localhost:${listenPort}`);
       if (isTelemetryEnabled()) {
         const telemetryMeta = getTelemetryMeta();
         emitTelemetry("telemetry_session", buildTelemetryContext({
