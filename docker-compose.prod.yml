@@ -6,7 +6,8 @@ services:
     image: supavector/vector-store
     restart: unless-stopped
     environment:
-      VECTOR_WAL: ${VECTOR_WAL:-0}
+      VECTOR_WAL: ${VECTOR_WAL:-1}
+      VECTOR_WAL_FSYNC_MS: ${VECTOR_WAL_FSYNC_MS:-1000}
       VECTOR_ANN_ENABLED: ${VECTOR_ANN_ENABLED:-0}
       VECTOR_ANN_LSH_TABLES: ${VECTOR_ANN_LSH_TABLES:-8}
       VECTOR_ANN_LSH_BITS: ${VECTOR_ANN_LSH_BITS:-12}

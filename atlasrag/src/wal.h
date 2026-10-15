@@ -2,7 +2,9 @@
 // Prevent multiple inclusion
 
 #include <cstdio>    // std::remove, std::rename
+#include <fcntl.h>   // open
 #include <fstream>   // file input/output
+#include <unistd.h>  // fsync, close
 #include <mutex>     // std::mutex, std::lock_guard
 #include <string>    // std::string
 #include <vector>    // std::vector
@@ -31,7 +33,14 @@ public:
     if (!out.is_open()) return;
 
     out << line << "\n";   // write command
-    out.flush();             // force write to disk
+    out.flush();             // hand to the OS; sync_file() makes it durable
+  }
+
+  // Flush the log's written bytes from the OS cache to disk. flush() alone
+  // survives a process crash but not a host crash or power loss. fsync works
+  // on the file, whichever descriptor wrote it, so writers are never blocked.
+  bool sync_file() const {
+    return sync_path(path_);
   }
 
   // Stream WAL file one line at a time.
@@ -86,15 +95,32 @@ public:
       }
     }
 
+    // The snapshot must be on disk before it replaces the log, and the
+    // rename must be on disk before the old log's contents are gone.
+    if (!sync_path(tmp_path)) {
+      std::remove(tmp_path.c_str());
+      return false;
+    }
+
     if (std::rename(tmp_path.c_str(), path_.c_str()) != 0) {
       std::remove(tmp_path.c_str());
       return false;
     }
 
+    const std::string::size_type slash = path_.find_last_of('/');
+    sync_path(slash == std::string::npos ? std::string(".") : path_.substr(0, slash == 0 ? 1 : slash));
     return true;
   }
 
 private:
+
+  static bool sync_path(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    const bool ok = ::fsync(fd) == 0;
+    ::close(fd);
+    return ok;
+  }
 
   std::string path_;   // filename of WAL
 

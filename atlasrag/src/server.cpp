@@ -128,14 +128,33 @@ static std::vector<std::string> build_wal_snapshot(DB& db, const VectorDB& vdb)
 // Rewrite the WAL from the current in-memory state.
 // If compaction fails, fall back to appending the latest mutation line.
 ////////////////////////////////////////////////////////////
+// Vector lines in the WAL since it was last rewritten (guarded by
+// g_mutation_mu). Every re-index appends a fresh copy of each vector, so
+// without a bound the log grows forever; past twice the live set (with a
+// floor) it is rewritten from memory.
+static size_t g_wal_vector_lines = 0;
+
 static void compact_wal(
     DB& db,
     WAL& wal,
     const VectorDB& vdb,
     const std::string& fallback_line)
 {
-  if (!wal.rewrite_lines(build_wal_snapshot(db, vdb))) {
+  if (wal.rewrite_lines(build_wal_snapshot(db, vdb))) {
+    g_wal_vector_lines = vdb.size();
+  } else {
     wal.append_line(fallback_line);
+  }
+}
+
+// Call after appending one vector line, with g_mutation_mu held.
+static void note_vector_wal_line(DB& db, WAL& wal, const VectorDB& vdb)
+{
+  g_wal_vector_lines += 1;
+  const size_t live = vdb.size();
+  const size_t limit = live * 2 > 10000 ? live * 2 : 10000;
+  if (g_wal_vector_lines > limit && wal.rewrite_lines(build_wal_snapshot(db, vdb))) {
+    g_wal_vector_lines = live;
   }
 }
 
@@ -358,6 +377,7 @@ static std::string handle_command(
 
     if (g_vector_wal_enabled) {
       wal.append_line(build_vset_wal_line(id, vec));
+      note_vector_wal_line(db, wal, vdb);
     }
 
     return upsert_result == VectorDB::UpsertResult::Inserted ? "OK new\n" : "OK updated\n";
@@ -381,6 +401,7 @@ static std::string handle_command(
         compact_wal(db, wal, vdb, "VDEL " + id);
       } else {
         wal.append_line("VDEL " + id);
+        note_vector_wal_line(db, wal, vdb);
       }
     }
 
@@ -617,6 +638,9 @@ static void replay_wal(DB& db, const WAL& wal, VectorDB& vdb)
   wal.for_each_line([&db, &vdb](const std::string& line) {
 
     auto parts = split_words(line);
+    if (!parts.empty() && (parts[0] == "VSET" || parts[0] == "VDEL")) {
+      g_wal_vector_lines += 1;
+    }
     if (parts.empty()) return;
 
     // STRING SET
@@ -765,6 +789,23 @@ int main()
 
   // Start TTL cleanup thread (for string KV TTL)
   std::thread(ttl_cleanup_thread, std::ref(db)).detach();
+
+  // Sync the WAL to disk on an interval (VECTOR_WAL_FSYNC_MS, default 1000;
+  // 0 turns it off). A host crash loses at most that window of writes, and
+  // no write waits on the disk.
+  if (g_vector_wal_enabled) {
+    long fsync_ms = 1000;
+    const char* fsync_env = std::getenv("VECTOR_WAL_FSYNC_MS");
+    if (fsync_env && std::string(fsync_env).size()) fsync_ms = std::atol(fsync_env);
+    if (fsync_ms > 0) {
+      std::thread([&wal, fsync_ms]() {
+        while (true) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(fsync_ms));
+          wal.sync_file();
+        }
+      }).detach();
+    }
+  }
 
   asio::io_context io;
 
