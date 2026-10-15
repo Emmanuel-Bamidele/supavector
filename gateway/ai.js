@@ -9,7 +9,7 @@
 // This file creates embeddings (vectors) for text chunks and queries.
 
 const crypto = require("crypto");
-const { DEFAULT_EMBED_MODEL, normalizeModelId, normalizeProviderId } = require("./model_config");
+const { normalizeProviderId, resolveEmbedModelForProvider } = require("./model_config");
 const { embedProviderTexts } = require("./provider_clients");
 
 const DEFAULT_BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE || "64", 10);
@@ -36,9 +36,7 @@ function resolveEmbedProvider(options = {}) {
 }
 
 function resolveEmbedModel(options = {}) {
-  return normalizeModelId(options?.embedModel)
-    || normalizeModelId(process.env.EMBED_MODEL)
-    || DEFAULT_EMBED_MODEL;
+  return resolveEmbedModelForProvider(resolveEmbedProvider(options), options?.embedModel || process.env.EMBED_MODEL);
 }
 
 function resolveEmbedDimension(options = {}) {

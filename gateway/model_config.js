@@ -29,6 +29,17 @@ function resolveEmbedRuntimeDefault(provider) {
   return defaultEmbeddingModelForProvider(cleanProvider);
 }
 
+// The embedding model a provider can actually serve. Compose fills EMBED_MODEL
+// with text-embedding-3-large whatever the provider, so an OpenAI model name on
+// another provider falls back to that provider's default instead of failing.
+// Indexing, query embedding, reindex and the dimension probe all resolve here.
+function resolveEmbedModelForProvider(provider, model) {
+  const cleanProvider = normalizeProviderId(provider) || DEFAULT_EMBED_PROVIDER;
+  const cleanModel = normalizeModelId(model);
+  if (cleanModel && !(cleanProvider !== "openai" && /^text-embedding-/i.test(cleanModel))) return cleanModel;
+  return resolveEmbedRuntimeDefault(cleanProvider);
+}
+
 function resolveEnvModelDefaults(env = process.env) {
   const answerProvider = normalizeProviderId(env.ANSWER_PROVIDER) || DEFAULT_ANSWER_PROVIDER;
   const answerModel = normalizeModelId(env.ANSWER_MODEL) || defaultGenerationModelForProvider(answerProvider);
@@ -45,7 +56,7 @@ function resolveEnvModelDefaults(env = process.env) {
     || (compactProvider === reflectProvider ? reflectModel : defaultReflectModelForProvider(compactProvider));
 
   const embedProvider = normalizeProviderId(env.EMBED_PROVIDER) || DEFAULT_EMBED_PROVIDER;
-  const embedModel = normalizeModelId(env.EMBED_MODEL) || resolveEmbedRuntimeDefault(embedProvider);
+  const embedModel = resolveEmbedModelForProvider(embedProvider, env.EMBED_MODEL);
 
   return {
     answerProvider,
@@ -186,6 +197,7 @@ function resolveRequestedGenerationConfig({
 }
 
 module.exports = {
+  resolveEmbedModelForProvider,
   DEFAULT_ANSWER_PROVIDER,
   DEFAULT_EMBED_PROVIDER,
   DEFAULT_REFLECT_PROVIDER,

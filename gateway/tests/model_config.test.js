@@ -100,6 +100,18 @@ function testEmbedFallbackStaysCompatible() {
   assert.equal(resolved.embedModel, "text-embedding-3-small");
 }
 
+function testEmbedModelFitsItsProvider() {
+  const { resolveEmbedModelForProvider } = require("../model_config");
+  // Compose sets EMBED_MODEL=text-embedding-3-large whatever the provider.
+  const geminiUnderCompose = resolveEnvModelDefaults({ EMBED_PROVIDER: "gemini", EMBED_MODEL: "text-embedding-3-large" });
+  assert.equal(geminiUnderCompose.embedModel, "gemini-embedding-001");
+  assert.equal(resolveEnvModelDefaults({ EMBED_PROVIDER: "gemini", EMBED_MODEL: "" }).embedModel, "gemini-embedding-001");
+  // A pinned model is kept; unpinned OpenAI installs keep their old fallback.
+  assert.equal(resolveEnvModelDefaults({ EMBED_PROVIDER: "openai", EMBED_MODEL: "text-embedding-3-large" }).embedModel, "text-embedding-3-large");
+  assert.equal(resolveEmbedModelForProvider("openai", ""), "text-embedding-3-small");
+  assert.equal(resolveEmbedModelForProvider("gemini", "gemini-embedding-2"), "gemini-embedding-2");
+}
+
 function testTenantModelInputParsing() {
   const parsed = parseTenantModelSettingsInput({
     models: {
@@ -221,6 +233,7 @@ function testEmbedAndReflectResolvers() {
 
 function main() {
   testEmbedFallbackStaysCompatible();
+  testEmbedModelFitsItsProvider();
   testTenantModelInheritance();
   testMissingTenantRecordUsesInstanceDefaults();
   testTenantModelInputParsing();
