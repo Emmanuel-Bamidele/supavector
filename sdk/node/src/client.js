@@ -223,6 +223,68 @@ class SupaVectorClient {
     });
   }
 
+  /**
+   * Streamed answer. onDelta(text) receives tokens while the answer is
+   * written; resolves with the final payload (same shape as ask()). Gateways
+   * that do not stream answer at once, which resolves the same way.
+   */
+  async askStream(question, params = {}, onDelta) {
+    const headers = { "Content-Type": "application/json", Accept: "text/event-stream, application/json" };
+    if (this.apiKey) headers["X-API-Key"] = this.apiKey;
+    else if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (this.openAiApiKey) headers["X-OpenAI-API-Key"] = this.openAiApiKey;
+    if (this.geminiApiKey) headers["X-Gemini-API-Key"] = this.geminiApiKey;
+    if (this.anthropicApiKey) headers["X-Anthropic-API-Key"] = this.anthropicApiKey;
+    const res = await fetch(`${this.baseUrl}/v1/ask`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(this.buildBody({ question, ...params, stream: true }))
+    });
+    if (!String(res.headers.get("content-type") || "").includes("text/event-stream")) {
+      const text = await res.text();
+      const payload = text ? JSON.parse(text) : null;
+      if (!res.ok) {
+        const err = new Error(payload?.error?.message || payload?.error || res.statusText);
+        err.status = res.status;
+        err.payload = payload;
+        throw err;
+      }
+      return payload;
+    }
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let final = null;
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        const event = block.match(/^event:\s*(.+)$/m)?.[1]?.trim();
+        const raw = [...block.matchAll(/^data:\s?(.*)$/gm)].map((m) => m[1]).join("\n");
+        if (!event || !raw) continue;
+        const data = JSON.parse(raw);
+        if (event === "delta" && data.text) onDelta?.(data.text);
+        else if (event === "answer") final = data;
+        else if (event === "error") {
+          const err = new Error(data.message || "stream failed");
+          err.status = data.status;
+          err.payload = data;
+          throw err;
+        }
+      }
+    }
+    if (!final) throw new Error("stream ended without an answer");
+    return { ok: true, data: final };
+  }
+
+  async reingest(data = {}) {
+    return this.request("/v1/admin/reingest", { method: "POST", body: data });
+  }
+
+  async reingestStatus() {
+    return this.request("/v1/admin/reingest");
+  }
+
   async code(question, params = {}) {
     return this.request("/v1/code", {
       method: "POST",

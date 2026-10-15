@@ -9,7 +9,7 @@ import string
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -722,6 +722,51 @@ class SupaVectorClient:
 
     def ask(self, question: str, params: Optional[Mapping[str, Any]] = None) -> Any:
         return self.request("/v1/ask", method="POST", body={"question": question, **dict(params or {})})
+
+    def ask_stream(self, question: str, params: Optional[Mapping[str, Any]] = None) -> Iterator[Dict[str, Any]]:
+        """Stream an answer. Yields {"event": "delta", "text": ...} while the
+        answer is written, then one {"event": "answer", "data": <ask payload>}.
+        Gateways that do not stream yield just the final answer event."""
+        body = json.dumps(self.build_body({"question": question, **dict(params or {}), "stream": True})).encode("utf-8")
+        headers = self._build_headers()
+        headers["Accept"] = "text/event-stream, application/json"
+        req = urllib_request.Request(f"{self.base_url}/v1/ask", data=body, method="POST", headers=headers)
+        try:
+            res = urllib_request.urlopen(req, timeout=self.timeout)
+        except urllib_error.HTTPError as exc:
+            raw = exc.read()
+            raise SupaVectorError(f"Request failed ({exc.code})", status=exc.code, response_body=raw.decode("utf-8") if raw else None) from None
+        except urllib_error.URLError as exc:
+            raise SupaVectorError(f"Request failed: {exc.reason}") from None
+        with res:
+            if "text/event-stream" not in (res.headers.get("Content-Type") or ""):
+                payload = self._decode_json(res.read())
+                data = payload.get("data", payload) if isinstance(payload, Mapping) else payload
+                yield {"event": "answer", "data": data}
+                return
+            event, data_lines = None, []
+            for raw_line in res:
+                line = raw_line.decode("utf-8").rstrip("\r\n")
+                if line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+                elif not line and event:
+                    data = json.loads("\n".join(data_lines)) if data_lines else {}
+                    if event == "delta":
+                        yield {"event": "delta", "text": data.get("text", "")}
+                    elif event == "answer":
+                        yield {"event": "answer", "data": data}
+                    elif event == "error":
+                        raise SupaVectorError(str(data.get("message") or "stream failed"), status=data.get("status"), payload=data)
+                    event, data_lines = None, []
+
+    def reingest(self, data: Optional[Mapping[str, Any]] = None) -> Any:
+        """Instance admin: re-run indexing for existing documents on the current pipeline."""
+        return self.request("/v1/admin/reingest", method="POST", body=dict(data or {}))
+
+    def reingest_status(self) -> Any:
+        return self.request("/v1/admin/reingest")
 
     def code(self, question: str, params: Optional[Mapping[str, Any]] = None) -> Any:
         return self.request("/v1/code", method="POST", body={"question": question, **dict(params or {})})
