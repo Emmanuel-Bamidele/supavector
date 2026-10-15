@@ -131,9 +131,9 @@ const { reflectMemories, summarizeMemories } = require("./memory_reflect");
 const { generateProviderText, resolveProviderApiKey } = require("./provider_clients");
 const {
   DEFAULT_EMBED_PROVIDER,
-  DEFAULT_EMBED_MODEL,
   buildPublicModelCatalog,
   resolveEnvModelDefaults,
+  resolveEmbedModelForProvider,
   normalizeModelId,
   normalizeProviderId,
   resolveTenantModelSettings,
@@ -415,6 +415,9 @@ const MAX_REFLECT_CHARS = parseInt(process.env.REFLECT_MAX_CHARS || "12000", 10)
 const MAX_COMPACT_CHARS = parseInt(process.env.COMPACT_MAX_CHARS || "12000", 10);
 const DEBUG_INDEX = process.env.DEBUG_INDEX === "1";
 const REINDEX_MODE = String(process.env.REINDEX_ON_START || "auto").toLowerCase();
+// The vector store can restart on its own (crash, OOM, upgrade) and come back
+// empty when its WAL is off. The gateway checks every minute and rebuilds.
+const VECTOR_STORE_WATCH_MS = parseInt(process.env.VECTOR_STORE_WATCH_MS || "60000", 10);
 const REINDEX_BATCH_SIZE = parseInt(process.env.REINDEX_BATCH_SIZE || "64", 10);
 const REINDEX_FETCH_SIZE = parseInt(process.env.REINDEX_FETCH_SIZE || "256", 10);
 const REINDEX_SLEEP_MS = parseInt(process.env.REINDEX_SLEEP_MS || "0", 10);
@@ -2205,19 +2208,13 @@ async function resolveStorageVectorDim(tenantId, metadata = null) {
   const embedProvider = metadata?.embedProvider || metadata?.embed_provider || null;
   const embedModel = metadata?.embedModel || metadata?.embed_model || null;
   if (embedProvider || embedModel) {
-    return resolveEmbedDimension({
-      embedProvider: embedProvider || DEFAULT_EMBED_PROVIDER,
-      embedModel: embedModel || DEFAULT_EMBED_MODEL
-    });
+    return resolveEmbedDimension(resolveInstanceEmbedConfig(embedProvider, embedModel));
   }
 
   const effectiveModels = tenantId
     ? await getEffectiveTenantModels(tenantId)
     : resolveEnvModelDefaults();
-  return resolveEmbedDimension({
-    embedProvider: effectiveModels?.embedProvider || DEFAULT_EMBED_PROVIDER,
-    embedModel: effectiveModels?.embedModel || DEFAULT_EMBED_MODEL
-  });
+  return resolveEmbedDimension(resolveInstanceEmbedConfig(effectiveModels?.embedProvider, effectiveModels?.embedModel));
 }
 
 function resolvePrincipalId(req) {
@@ -4269,31 +4266,50 @@ async function getVectorHealthSnapshot() {
   return snapshot;
 }
 
+// One embedding model per instance: a provider or model given without the
+// other is completed from the instance's own settings, never from a separate
+// hard-coded default that could disagree with what indexing used.
+function resolveInstanceEmbedConfig(provider = null, model = null) {
+  const instance = resolveEnvModelDefaults();
+  const embedProvider = normalizeProviderId(provider) || instance.embedProvider;
+  const embedModel = resolveEmbedModelForProvider(
+    embedProvider,
+    model || (embedProvider === instance.embedProvider ? instance.embedModel : null)
+  );
+  return { embedProvider, embedModel };
+}
+
 async function clearVectorStore() {
   await sendCmd(buildVclear());
 }
 
+// A rebuild overwrites vectors in place (VSET replaces an id), so search keeps
+// serving while it runs. The store is cleared first only when the embedding
+// dimension changed: one store holds one dimension, and every old vector is
+// unusable anyway. Extra vectors are harmless (search is scoped to chunk ids
+// from Postgres) and never trigger a paid full rebuild on their own.
 function shouldReindexStoredVectors({ mode, totalChunks, vectorCount, vectorDims, expectedVectorDim }) {
   const normalizedMode = normalizeReindexMode(mode);
   if (normalizedMode === "off") {
     return { shouldReindex: false, clearFirst: false, reason: "disabled" };
   }
-  if (normalizedMode === "always") {
-    return { shouldReindex: true, clearFirst: vectorCount > 0, reason: "forced" };
-  }
-
-  const dimsMismatch = expectedVectorDim > 0 && vectorDims > 0 && vectorDims !== expectedVectorDim;
-  const countMismatch = vectorCount !== totalChunks;
-  if (vectorCount > 0 && !dimsMismatch && !countMismatch) {
-    return { shouldReindex: false, clearFirst: false, reason: "up_to_date" };
-  }
+  const dimsMismatch = expectedVectorDim > 0 && vectorDims > 0 && vectorDims !== expectedVectorDim && vectorCount > 0;
   if (dimsMismatch) {
-    return { shouldReindex: true, clearFirst: vectorCount > 0, reason: "dimension_mismatch" };
+    return { shouldReindex: true, clearFirst: true, reason: "dimension_mismatch" };
   }
-  if (countMismatch) {
-    return { shouldReindex: true, clearFirst: vectorCount > 0, reason: "count_mismatch" };
+  if (normalizedMode === "always") {
+    return { shouldReindex: true, clearFirst: false, reason: "forced" };
   }
-  return { shouldReindex: true, clearFirst: vectorCount > 0, reason: "missing_vectors" };
+  if (vectorCount === 0 && totalChunks > 0) {
+    return { shouldReindex: true, clearFirst: false, reason: "missing_vectors" };
+  }
+  if (vectorCount < totalChunks) {
+    return { shouldReindex: true, clearFirst: false, reason: "count_mismatch" };
+  }
+  if (vectorCount > totalChunks) {
+    return { shouldReindex: false, clearFirst: false, reason: "extra_vectors" };
+  }
+  return { shouldReindex: false, clearFirst: false, reason: "up_to_date" };
 }
 
 async function reindexChunkBatch(rows) {
@@ -4302,8 +4318,7 @@ async function reindexChunkBatch(rows) {
   // instance's configured model, or a reindex would silently change vectors.
   const texts = rows.map((r) => (r.context ? `${r.context}\n\n${r.text}` : r.text));
   const { vectors } = await embedTexts(texts, {
-    embedProvider: process.env.EMBED_PROVIDER || DEFAULT_EMBED_PROVIDER,
-    embedModel: process.env.EMBED_MODEL || DEFAULT_EMBED_MODEL,
+    ...resolveInstanceEmbedConfig(),
     taskType: "RETRIEVAL_DOCUMENT"
   });
   const commands = rows.map((row, index) => buildVset(row.chunk_id, vectors[index]));
@@ -4338,7 +4353,7 @@ async function reindexAllChunks(options = {}) {
   }
 
   // The key for the configured embedding provider, not always OpenAI's.
-  const reindexEmbedProvider = process.env.EMBED_PROVIDER || DEFAULT_EMBED_PROVIDER;
+  const reindexEmbedProvider = resolveInstanceEmbedConfig().embedProvider;
   try {
     resolveProviderApiKey(reindexEmbedProvider);
   } catch {
@@ -4357,38 +4372,33 @@ async function reindexAllChunks(options = {}) {
 
   await waitForVectorStore();
   const expectedVectorDim = await resolveExpectedEmbedVectorDim();
-  let decision = shouldReindexStoredVectors({
-    mode,
-    totalChunks,
-    vectorCount: 0,
-    vectorDims: 0,
-    expectedVectorDim
-  });
-
-  if (mode === "auto") {
-    try {
-      const { vectors, vectorDims } = await getVectorStats();
-      decision = shouldReindexStoredVectors({
-        mode,
-        totalChunks,
-        vectorCount: vectors,
-        vectorDims,
-        expectedVectorDim
-      });
-      if (!decision.shouldReindex) {
-        console.log(`[reindex] Vector store already has ${vectors} vectors with dim ${vectorDims}; skipping auto reindex.`);
-        lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: "up_to_date" };
-        return;
-      }
-      if (decision.reason === "dimension_mismatch") {
-        console.log(`[reindex] Vector dimension mismatch detected (store=${vectorDims}, expected=${expectedVectorDim}); rebuilding vectors.`);
-      } else if (decision.reason === "count_mismatch") {
-        console.log(`[reindex] Vector count mismatch detected (store=${vectors}, chunks=${totalChunks}); rebuilding vectors.`);
-      }
-    } catch (err) {
-      console.warn("[reindex] Failed to read vector stats; continuing with reindex.");
-      decision = { shouldReindex: true, clearFirst: true, reason: "stats_unavailable" };
+  // Stats are read in every mode, so a forced rebuild still notices a
+  // dimension change instead of failing on the first mismatched VSET.
+  let decision;
+  try {
+    const { vectors, vectorDims } = await getVectorStats();
+    decision = shouldReindexStoredVectors({
+      mode,
+      totalChunks,
+      vectorCount: vectors,
+      vectorDims,
+      expectedVectorDim
+    });
+    if (!decision.shouldReindex) {
+      console.log(decision.reason === "extra_vectors"
+        ? `[reindex] Vector store has ${vectors} vectors for ${totalChunks} chunks; the extras are never searched, skipping rebuild.`
+        : `[reindex] Vector store already has ${vectors} vectors with dim ${vectorDims}; skipping auto reindex.`);
+      lastReindexState = { ...lastReindexState, status: "skipped", finishedAt: new Date().toISOString(), reason: decision.reason };
+      return;
     }
+    if (decision.reason === "dimension_mismatch") {
+      console.log(`[reindex] Vector dimension changed (store=${vectorDims}, expected=${expectedVectorDim}); clearing and rebuilding vectors.`);
+    } else if (decision.reason === "count_mismatch") {
+      console.log(`[reindex] Vector store is missing vectors (store=${vectors}, chunks=${totalChunks}); rebuilding in place.`);
+    }
+  } catch (err) {
+    console.warn("[reindex] Failed to read vector stats; rebuilding in place.");
+    decision = { shouldReindex: true, clearFirst: false, reason: "stats_unavailable" };
   }
 
   const batchSize = Number.isFinite(REINDEX_BATCH_SIZE) && REINDEX_BATCH_SIZE > 0 ? REINDEX_BATCH_SIZE : 64;
@@ -4457,6 +4467,24 @@ function scheduleAutoReindex() {
       console.warn("[reindex] Failed:", err?.message || err);
     });
   }, 1500);
+  if (VECTOR_STORE_WATCH_MS > 0 && normalizeReindexMode(REINDEX_MODE) !== "off") {
+    setInterval(() => {
+      watchVectorStoreOnce().catch(() => {});
+    }, VECTOR_STORE_WATCH_MS).unref();
+  }
+}
+
+// Cheap on the common path: one STATS call. Chunks are counted only when the
+// store reports no vectors at all.
+async function watchVectorStoreOnce() {
+  if (reindexRunning) return;
+  const { vectors } = await getVectorStats();
+  if (vectors > 0) return;
+  if (!(await countChunks())) return;
+  console.warn("[reindex] Vector store came back empty while chunks exist; rebuilding.");
+  await reindexAllChunks({ mode: "auto" }).catch((err) => {
+    console.warn("[reindex] Failed:", err?.message || err);
+  });
 }
 
 async function runTtlSweepOnce() {
@@ -6151,10 +6179,7 @@ async function searchChunks({
   const rerankPool = rerank && rerankEnabled() ? RERANK_CANDIDATES : 0;
   const policyConfig = resolveMemoryPolicyConfig(policy);
   const effectiveModels = (embedModel || embedProvider)
-    ? {
-        embedProvider: embedProvider || DEFAULT_EMBED_PROVIDER,
-        embedModel: embedModel || DEFAULT_EMBED_MODEL
-      }
+    ? resolveInstanceEmbedConfig(embedProvider, embedModel)
     : await getEffectiveTenantModels(tenantId);
   const { vectors: [qvec], usage } = await embedTexts([query], {
     apiKey,
@@ -12818,8 +12843,9 @@ app.post("/v1/admin/reingest", requireJwt, requireInstanceAdmin, (req, res) => {
   sendOk(res, result, tenantId, collection);
 });
 
-// Instance admin only: a reindex clears and rebuilds EVERY tenant's vectors,
-// so a tenant-level admin token must not be able to start one.
+// Instance admin only: a reindex re-embeds EVERY tenant's vectors (paid, and
+// a dimension change clears the store first), so a tenant-level admin token
+// must not be able to start one.
 app.post(["/admin/vector/reindex", "/v1/admin/vector/reindex"], requireJwt, requireInstanceAdmin, async (req, res) => {
   let tenantId = null;
   try {
@@ -15681,6 +15707,10 @@ async function start() {
           run_id: telemetryMeta.runId,
           config_id: telemetryMeta.configId
         });
+      }
+      if (!String(process.env.EMBED_MODEL || "").trim()) {
+        const { embedProvider, embedModel } = resolveInstanceEmbedConfig();
+        console.warn(`[config] EMBED_MODEL is not set; embedding with ${embedProvider}/${embedModel}. Pin it in .env: changing it later means re-embedding every chunk.`);
       }
       scheduleAutoReindex();
       scheduleTtlSweep();
