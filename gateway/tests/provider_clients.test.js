@@ -291,6 +291,38 @@ async function testAnthropicGenerationJsonMode() {
   });
 }
 
+async function testAnthropicRetriesWithoutFieldsTheModelRejects() {
+  const bodies = [];
+  await withFetchStub(async (url, options) => {
+    const body = JSON.parse(options.body);
+    bodies.push(body);
+    if (body.temperature !== undefined) {
+      return makeErrorResponse(400, { error: { type: "invalid_request_error", message: "`temperature` is deprecated for this model." } });
+    }
+    if (body.messages.length > 1) {
+      return makeErrorResponse(400, { error: { type: "invalid_request_error", message: "This model does not support assistant message prefill. The conversation must end with a user message." } });
+    }
+    return makeJsonResponse({ content: [{ type: "text", text: "{\"ok\":true}" }], usage: { input_tokens: 7, output_tokens: 3 } });
+  }, async () => {
+    const ask = () => generateProviderText({
+      provider: "anthropic",
+      model: "claude-test-rejects-both",
+      input: { system: "Return JSON only.", user: "Give me a tiny JSON object." },
+      apiKey: "anthropic-key",
+      temperature: 0,
+      jsonMode: true,
+      maxTokens: 512
+    });
+    assert.equal((await ask()).text, "{\"ok\":true}");
+    assert.equal(bodies.length, 3, "drops temperature, then prefill");
+    // Learned per model: the next call sends neither field on its first try.
+    assert.equal((await ask()).text, "{\"ok\":true}");
+    assert.equal(bodies.length, 4);
+    assert.equal(bodies[3].temperature, undefined);
+    assert.equal(bodies[3].messages.length, 1);
+  });
+}
+
 async function testGeminiStreamingGeneration() {
   await withFetchStub(async (url, options) => {
     assert.match(String(url), /streamGenerateContent\?alt=sse/);
@@ -656,6 +688,7 @@ async function main() {
   await testGeminiGenerationRetriesBlankText();
   await testGeminiGenerationDoesNotRetryNonRetryableFailure();
   await testAnthropicGenerationJsonMode();
+  await testAnthropicRetriesWithoutFieldsTheModelRejects();
   await testGeminiStreamingGeneration();
   await testGeminiStreamingGenerationHandlesCumulativeChunks();
   await testGeminiStreamingGenerationHandlesMislabelledSse();

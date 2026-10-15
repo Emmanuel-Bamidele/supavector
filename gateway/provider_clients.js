@@ -549,7 +549,20 @@ async function generateTextWithGemini({ model, input, apiKey, temperature, jsonM
   };
 }
 
-function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens = 4096, stream = false }) {
+// Newer Claude models reject `temperature` and assistant prefill with a 400.
+// Which models do is learned from that error, once per model, rather than
+// kept as a list: the request is retried without the rejected field.
+const anthropicUnsupported = new Map();
+
+function anthropicRejectedField(err) {
+  if (Number(err?.status) !== 400) return null;
+  const message = String(err?.message || "");
+  if (/temperature/i.test(message)) return "temperature";
+  if (/prefill/i.test(message)) return "prefill";
+  return null;
+}
+
+function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens = 4096, stream = false, omit = new Set() }) {
   const isStructured = input && typeof input === "object" && !Array.isArray(input) && input.system !== undefined;
   const systemParts = [];
   if (isStructured && String(input.system || "").trim()) {
@@ -560,7 +573,7 @@ function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = f
   }
   const userContent = isStructured ? String(input.user || "") : String(input || "");
   const messages = [{ role: "user", content: userContent }];
-  if (jsonMode) {
+  if (jsonMode && !omit.has("prefill")) {
     messages.push({ role: "assistant", content: "{" });
   }
   return {
@@ -569,11 +582,24 @@ function buildAnthropicTextRequestBody({ model, input, temperature, jsonMode = f
     ...(stream ? { stream: true } : {}),
     ...(systemParts.length ? { system: systemParts.join("\n\n") } : {}),
     messages,
-    ...(temperature !== undefined ? { temperature } : {})
+    ...(temperature !== undefined && !omit.has("temperature") ? { temperature } : {})
   };
 }
 
-async function generateTextWithAnthropic({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096, onToken, signal }) {
+async function generateTextWithAnthropic(options) {
+  for (;;) {
+    const omit = anthropicUnsupported.get(options.model) || new Set();
+    try {
+      return await generateTextWithAnthropicOnce({ ...options, omit });
+    } catch (err) {
+      const field = anthropicRejectedField(err);
+      if (!field || omit.has(field)) throw err;
+      anthropicUnsupported.set(options.model, new Set([...omit, field]));
+    }
+  }
+}
+
+async function generateTextWithAnthropicOnce({ model, input, apiKey, temperature, jsonMode = false, maxTokens = 4096, onToken, signal, omit }) {
   const key = resolveProviderApiKey("anthropic", apiKey);
   if (typeof onToken === "function") {
     let streamedText = "";
@@ -592,7 +618,8 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
         temperature,
         jsonMode,
         maxTokens,
-        stream: true
+        stream: true,
+        omit
       })),
       signal
     }, {
@@ -653,7 +680,8 @@ async function generateTextWithAnthropic({ model, input, apiKey, temperature, js
       temperature,
       jsonMode,
       maxTokens,
-      stream: false
+      stream: false,
+      omit
     })),
     signal
   });
