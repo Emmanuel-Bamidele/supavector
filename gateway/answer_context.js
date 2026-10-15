@@ -70,15 +70,17 @@ async function expandWithNeighbors(chunks, fetchByIds, { topN = TOP_N, radius = 
  * @param {Array} chosen selected results, in order
  * @param {Array<Array>} partLists one result list per part, best first
  * @param {(item: object) => string} idOf
+ * @param {number} perPart how many of each list's best to keep
  */
-function withPartCoverage(chosen, partLists, idOf) {
+function withPartCoverage(chosen, partLists, idOf, perPart = 1) {
   const out = [...chosen];
   const ids = new Set(out.map(idOf));
   for (const list of partLists) {
-    const best = Array.isArray(list) ? list[0] : null;
-    if (!best || ids.has(idOf(best))) continue;
-    out.push(best);
-    ids.add(idOf(best));
+    for (const item of (Array.isArray(list) ? list : []).slice(0, perPart)) {
+      if (!item || ids.has(idOf(item))) continue;
+      out.push(item);
+      ids.add(idOf(item));
+    }
   }
   return out;
 }

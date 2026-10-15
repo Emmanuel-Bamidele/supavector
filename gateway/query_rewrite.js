@@ -132,4 +132,55 @@ async function planRetrieval({ question, history, answerProvider, answerApiKey }
   }
 }
 
-module.exports = { rewriteQueryForRetrieval, planRetrieval, looksMultiPart, acceptRewrite, formatHistory };
+// Second round of the deep path (DEEP_PATH_FOLLOWUP=1). After the first round,
+// the small model sees what was found and writes searches for the parts
+// nothing covers: an outlet's report on a given day, a named person. Gemini
+// File Search's several rounds found articles a single round missed. Any
+// failure means no second round, never a failed answer.
+const FOLLOWUP_ENABLED = process.env.DEEP_PATH_FOLLOWUP === "1";
+const MAX_FOLLOWUPS = 3;
+const FOLLOWUP_INSTRUCTIONS = `You check whether search results cover every part of a question.
+Given the question, its parts, and the documents found (title and opening), list each part no document covers, and for each write one new search query that would find it: use names, outlets, dates and specifics from the question and the found documents.
+Return JSON: {"queries": ["..."]} with at most ${MAX_FOLLOWUPS} queries, or {"queries": []} when every part is covered.`;
+
+/**
+ * @param {{question: string, parts: string[], found: Array<{title: string, opening: string}>}} input
+ * @returns {Promise<{queries: string[], usage: object|null}>}
+ */
+async function planFollowupSearches({ question, parts, found, answerProvider, answerApiKey }) {
+  if (!FOLLOWUP_ENABLED || !Array.isArray(parts) || parts.length < 2) return { queries: [], usage: null };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REWRITE_TIMEOUT_MS);
+  try {
+    const listed = (Array.isArray(found) ? found : []).slice(0, 15)
+      .map((doc) => `- ${String(doc.title || "").slice(0, 120)}: ${String(doc.opening || "").replace(/\s+/g, " ").slice(0, 160)}`)
+      .join("\n");
+    const result = await generateProviderText({
+      provider: REWRITE_PROVIDER,
+      model: REWRITE_MODEL,
+      apiKey: answerProvider === REWRITE_PROVIDER ? answerApiKey : undefined,
+      input: {
+        system: FOLLOWUP_INSTRUCTIONS,
+        user: `Question: ${String(question || "").trim()}\nParts: ${JSON.stringify(parts)}\nDocuments found:\n${listed}`
+      },
+      temperature: 0,
+      jsonMode: true,
+      maxTokens: 200,
+      maxRetries: 0,
+      signal: controller.signal
+    });
+    const parsed = JSON.parse(result?.text || "{}");
+    const queries = (Array.isArray(parsed.queries) ? parsed.queries : [])
+      .map((q) => acceptRewrite(q, String(question || "")))
+      .filter(Boolean)
+      .slice(0, MAX_FOLLOWUPS);
+    return { queries, usage: result?.usage || null };
+  } catch (err) {
+    console.warn(`[retrieval-followup] skipped: ${String(err?.message || err).slice(0, 200)}`);
+    return { queries: [], usage: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { rewriteQueryForRetrieval, planRetrieval, planFollowupSearches, looksMultiPart, acceptRewrite, formatHistory };

@@ -26,7 +26,7 @@ const {
   resolveMemoryKnowledgeType
 } = require("./retrieval_planner");
 const { sendCmd, sendCmdBatch, buildVset, buildVsearchIn, buildVsearchAnnIn, buildVdel, buildVclear, parseVsearchReply } = require("./tcp");
-const { planRetrieval } = require("./query_rewrite");
+const { planRetrieval, planFollowupSearches } = require("./query_rewrite");
 const { rerankCandidates, rerankEnabled, RERANK_CANDIDATES, RERANK_PROVIDER } = require("./rerank");
 const { buildChunkContexts } = require("./chunk_context");
 const { expandWithNeighbors, withPartCoverage } = require("./answer_context");
@@ -7485,7 +7485,8 @@ async function buildAnswerContext({
   operation,
   retrievalSource,
   embedProvider,
-  embedModel
+  embedModel,
+  planner = {}
 }) {
   const telemetryContext = buildTelemetryContext({
     requestId: telemetry?.requestId,
@@ -7571,6 +7572,27 @@ async function buildAnswerContext({
       score: Number.isFinite(rerankScore) ? rerankScore : result.score
     }));
     results = withPartCoverage(chosen, lists.slice(1), (result) => result._row.chunk_id);
+    // Second round (off unless DEEP_PATH_FOLLOWUP=1): searches written after
+    // seeing what round one found, for the parts it missed.
+    const found = [];
+    for (const result of results) {
+      if (found.some((doc) => doc.docId === result._row.doc_id)) continue;
+      const titleLine = String(result._row.context || "").split("\n").find((line) => line.startsWith("Document: "));
+      found.push({ docId: result._row.doc_id, title: titleLine ? titleLine.slice(10) : result._row.doc_id, opening: result._row.text });
+    }
+    const followup = await planFollowupSearches({ question, parts: subqueries, found, ...planner });
+    if (followup.usage) {
+      recordGenerationUsage(tenantId, followup.usage, buildTelemetryContext({
+        requestId: telemetryContext.requestId,
+        tenantId,
+        collection,
+        source: "retrieval_followup"
+      }));
+    }
+    if (followup.queries.length) {
+      const extra = await Promise.all(followup.queries.map((query) => search(query, 5, false)));
+      results = withPartCoverage(results, extra, (result) => result._row.chunk_id, 2);
+    }
   } else {
     results = await search(question, topK, true);
   }
@@ -8074,7 +8096,8 @@ async function answerQuestion({
     embedModel: effectiveModels.embedModel,
     embedProvider: effectiveModels.embedProvider,
     operation: "answer_question",
-    retrievalSource: "answer_retrieval_query"
+    retrievalSource: "answer_retrieval_query",
+    planner: { answerProvider: requestedAnswerConfig.provider, answerApiKey: generationApiKey }
   });
   if (rewrite.usage) {
     recordGenerationUsage(tenantId, rewrite.usage, buildTelemetryContext({

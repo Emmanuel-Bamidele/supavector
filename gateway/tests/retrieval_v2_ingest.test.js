@@ -11,7 +11,7 @@ const { joinChunkTexts } = require("../doc_text");
 const { expandWithNeighbors, withPartCoverage } = require("../answer_context");
 const { buildChunkContexts, headerFor } = require("../chunk_context");
 const { createReingestJob } = require("../reingest");
-const { planRetrieval, looksMultiPart } = require("../query_rewrite");
+const { planRetrieval, planFollowupSearches, looksMultiPart } = require("../query_rewrite");
 
 const POLICY = `# Refund Policy
 
@@ -136,6 +136,18 @@ function testEveryPartKeepsItsBestPassage() {
   assert.deepEqual(withPartCoverage(chosen, [[{ id: "nike#3" }]], idOf).map(idOf), ["nike#1", "nike#2", "nike#3"]);
 }
 
+async function testFollowupRoundIsOffByDefaultAndNeedsSeveralParts() {
+  const started = Date.now();
+  const off = await planFollowupSearches({ question: "Did A and B agree?", parts: ["A", "B"], found: [] });
+  assert.deepEqual(off, { queries: [], usage: null });
+  const single = await planFollowupSearches({ question: "What is A?", parts: [], found: [] });
+  assert.deepEqual(single, { queries: [], usage: null });
+  assert.ok(Date.now() - started < 50, "no model call");
+  const idOf = (r) => r.id;
+  const kept = withPartCoverage([{ id: "a#0" }], [[{ id: "b#0" }, { id: "b#1" }, { id: "b#2" }]], idOf, 2).map(idOf);
+  assert.deepEqual(kept, ["a#0", "b#0", "b#1"]);
+}
+
 (async () => {
   testHeadingsBecomeSectionPaths();
   testChunksNeverOverlapAndRebuildExactly();
@@ -147,6 +159,7 @@ function testEveryPartKeepsItsBestPassage() {
   await testContextFallsBackToHeadersWithoutAModel();
   await testReingestUsesStoredTextElseRebuildsAndCountsFailures();
   await testPlannerSkipsTheModelForSimpleQuestions();
+  await testFollowupRoundIsOffByDefaultAndNeedsSeveralParts();
   console.log("retrieval v2 ingest tests passed");
 })().catch((err) => {
   console.error(err);
