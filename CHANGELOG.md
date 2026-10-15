@@ -23,6 +23,11 @@ from 18.4 s to 4.2 s; with `k: 20` it reaches 82.0%. Full results:
 - A long document title is shortened instead of rejecting the document.
 - Vector reindex embeds chunk context with the configured model and checks the configured provider's key.
 - `/v1/admin/vector/reindex` requires instance admin; it rebuilds every tenant's vectors.
+- Vector rebuilds overwrite in place, so search keeps serving; only a change of embedding dimension clears the store first. Extra vectors no longer trigger a full paid rebuild, and a forced rebuild checks the dimension before it starts.
+- A vector store that restarts empty is rebuilt automatically: the gateway checks every `VECTOR_STORE_WATCH_MS` (default 60 s).
+- The vector WAL is synced to disk every `VECTOR_WAL_FSYNC_MS` (default 1 s) and compacted once it holds twice the live vectors; its rewrite is synced before it replaces the log. It is on by default in the production compose file.
+- Every path resolves the embedding model the same way: reindex and the dimension probe match indexing, Gemini no longer receives OpenAI's model name under compose, and the gateway warns at startup when `EMBED_MODEL` is unset. Unpinned OpenAI installs keep their `text-embedding-3-small` fallback.
+- Persona answers stay within the AI's own knowledge: a fact the sources don't contain is declined in the AI's voice, not supplied from general knowledge.
 - Anthropic answers work with current Claude models. They reject `temperature` and assistant prefill; the gateway learns this from the API's error, once per model, and retries without the field.
 
 ### Added
