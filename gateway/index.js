@@ -6181,13 +6181,17 @@ async function searchChunks({
   const effectiveModels = (embedModel || embedProvider)
     ? resolveInstanceEmbedConfig(embedProvider, embedModel)
     : await getEffectiveTenantModels(tenantId);
-  const { vectors: [qvec], usage } = await embedTexts([query], {
+  // The query embedding is a provider round trip (most of a search's time),
+  // so it is requested first and awaited only when the vector search needs
+  // it; the candidate scope is worked out meanwhile. Usage is recorded when it
+  // lands, including on the early returns below.
+  const queryEmbedding = embedTexts([query], {
     apiKey,
     embedProvider: effectiveModels.embedProvider,
     embedModel: effectiveModels.embedModel,
     taskType: "RETRIEVAL_QUERY"
   });
-  recordEmbeddingUsage(tenantId, usage, telemetryContext);
+  queryEmbedding.then(({ usage }) => recordEmbeddingUsage(tenantId, usage, telemetryContext), () => {});
 
   const cleanDocIds = Array.isArray(docIds) ? docIds : [];
   const cleanNamespaceIds = Array.isArray(namespaceIds) ? namespaceIds : [];
@@ -6318,6 +6322,23 @@ async function searchChunks({
   const annOverfetch = Number.isFinite(VECTOR_ANN_OVERFETCH) && VECTOR_ANN_OVERFETCH > 0
     ? VECTOR_ANN_OVERFETCH
     : 5;
+  // Keyword search needs only the scope, so it runs while the vector search does.
+  const namespacedDocIds = candidateNamespaceIds;
+  const lexicalMultiplier = Number.isFinite(HYBRID_LEXICAL_MULTIPLIER) && HYBRID_LEXICAL_MULTIPLIER > 0
+    ? HYBRID_LEXICAL_MULTIPLIER
+    : 2;
+  const lexicalCap = Number.isFinite(HYBRID_LEXICAL_CAP) && HYBRID_LEXICAL_CAP > 0
+    ? HYBRID_LEXICAL_CAP
+    : 120;
+  const lexicalK = Math.max(Math.min(topK * lexicalMultiplier, lexicalCap), rerankPool);
+  const lexicalSearchStarted = process.hrtime.bigint();
+  const lexicalSearch = HYBRID_RETRIEVAL_ENABLED && lexicalK > 0
+    ? searchChunksLexical({ tenantId, collection, query, limit: lexicalK, namespacedDocIds }).catch((err) => {
+        console.warn("[search] lexical retrieval failed:", err?.message || err);
+        return [];
+      })
+    : Promise.resolve([]);
+  const { vectors: [qvec] } = await queryEmbedding;
   const exactVectorSearch = async () => parseVsearchReply(await sendCmd(buildVsearchIn(scopedK, qvec, candidateChunkIds)));
   const annVectorSearch = async () => parseVsearchReply(await sendCmd(buildVsearchAnnIn(scopedK, qvec, candidateChunkIds, annOverfetch)));
   const vectorSearchRequestedMode = VECTOR_ANN_ENABLED ? VECTOR_SEARCH_MODE : "exact";
@@ -6422,33 +6443,8 @@ async function searchChunks({
   const denseChunkMap = await getChunksByIds(denseMatches.map((match) => match.id).filter(Boolean));
   const denseSearchMs = elapsedMsSince(denseSearchStarted);
   const docFilter = hasDocFilter ? new Set(cleanDocIds) : null;
-  const namespacedDocIds = candidateNamespaceIds;
-
-  const lexicalMultiplier = Number.isFinite(HYBRID_LEXICAL_MULTIPLIER) && HYBRID_LEXICAL_MULTIPLIER > 0
-    ? HYBRID_LEXICAL_MULTIPLIER
-    : 2;
-  const lexicalCap = Number.isFinite(HYBRID_LEXICAL_CAP) && HYBRID_LEXICAL_CAP > 0
-    ? HYBRID_LEXICAL_CAP
-    : 120;
-  const lexicalK = Math.max(Math.min(topK * lexicalMultiplier, lexicalCap), rerankPool);
-
-  let lexicalRows = [];
-  const lexicalSearchStarted = process.hrtime.bigint();
-  let lexicalSearchMs = 0;
-  if (HYBRID_RETRIEVAL_ENABLED && lexicalK > 0) {
-    try {
-      lexicalRows = await searchChunksLexical({
-        tenantId,
-        collection,
-        query,
-        limit: lexicalK,
-        namespacedDocIds
-      });
-    } catch (err) {
-      console.warn("[search] lexical retrieval failed:", err?.message || err);
-    }
-  }
-  lexicalSearchMs = elapsedMsSince(lexicalSearchStarted);
+  const lexicalRows = await lexicalSearch;
+  const lexicalSearchMs = elapsedMsSince(lexicalSearchStarted);
 
   const candidates = new Map();
   function addCandidate(row, vectorScore, lexicalScore, vectorRank, lexicalRank) {
