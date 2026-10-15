@@ -15784,14 +15784,19 @@ async function start() {
         console.warn(`[config] EMBED_MODEL is not set; embedding with ${embedProvider}/${embedModel}. Pin it in .env: changing it later means re-embedding every chunk.`);
       }
       scheduleAutoReindex();
-      scheduleTtlSweep();
-      scheduleStorageBillingAccrualSweep();
-      scheduleJobSweep();
-      scheduleMemoryEventFlush();
-      scheduleValueDecay();
-      scheduleRedundancySweep();
-      scheduleLifecycleSweep();
-      scheduleMemorySnapshots();
+      // BACKGROUND_JOBS=off: a second gateway that only builds vectors into
+      // its own store (a side-by-side rebuild) must not run billing, decay or
+      // sweeps against the shared database a second time.
+      if (process.env.BACKGROUND_JOBS !== "off") {
+        scheduleTtlSweep();
+        scheduleStorageBillingAccrualSweep();
+        scheduleJobSweep();
+        scheduleMemoryEventFlush();
+        scheduleValueDecay();
+        scheduleRedundancySweep();
+        scheduleLifecycleSweep();
+        scheduleMemorySnapshots();
+      }
     });
   } catch (err) {
     console.error("Failed to start gateway:", err);

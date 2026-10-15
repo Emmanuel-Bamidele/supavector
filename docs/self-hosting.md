@@ -510,6 +510,30 @@ Once the stack is running, the main local URLs are:
 - MCP endpoint: `http://localhost:3000/mcp`
 - LLM discovery file: `http://localhost:3000/llms.txt`
 
+## Changing The Embedding Model Without A Search Gap
+
+The vector store records which embedding model built it
+(`provider:model:dimensions`). If you change `EMBED_PROVIDER` or `EMBED_MODEL` and
+restart, the gateway notices, clears the store and re-embeds every chunk.
+Meaning-based search is degraded until that finishes, and keyword search
+carries on. To avoid the gap, build the new vectors in a second store first:
+
+1. Start a second vector store on its own port and volume, for example
+   `ATLASRAG_PORT=6380` with `VECTOR_WAL=1`.
+2. Run a builder gateway against the same Postgres, pointed at that store, with
+   the new model and its background jobs off, so billing, decay and sweeps
+   don't run twice:
+   `TCP_PORT=6380 EMBED_PROVIDER=gemini EMBED_MODEL=gemini-embedding-2
+   REINDEX_ON_START=force BACKGROUND_JOBS=off GATEWAY_PORT=3001`.
+   It only writes vectors to its own store. Wait for
+   `[reindex] Completed` in its log, then stop it.
+3. Point the live gateway at the new store with the same model settings
+   (`TCP_PORT=6380`, `EMBED_PROVIDER`, `EMBED_MODEL`) and restart it. Documents
+   added during the build exist only in the old store; the gateway sees the
+   missing vectors and fills them in place, with search serving throughout.
+   Pausing uploads during the build avoids that catch-up pass.
+4. Keep the old store until you're satisfied, then remove it.
+
 ## Daily Operations
 
 ### Stop The Stack
