@@ -103,7 +103,8 @@ function createOpenAiFileSearchSystem({ name, model = "gpt-5.2", apiKey = proces
         headers,
         body: {
           model,
-          instructions: INSTRUCTIONS,
+          // A product set's persona leads the instructions, as it does for SupaVector.
+          instructions: query.persona ? `${query.persona}\n\n${INSTRUCTIONS}` : INSTRUCTIONS,
           input,
           tools: [{ type: "file_search", vector_store_ids: [state.vectorStoreId], max_num_results: 20 }],
           include: ["file_search_call.results"]

@@ -125,7 +125,8 @@ function createGeminiFileSearchSystem({ name, model = "gemini-4-argon", apiKey =
         method: "POST",
         headers,
         body: {
-          systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
+          // A product set's persona leads the instructions, as it does for SupaVector.
+          systemInstruction: { parts: [{ text: query.persona ? `${query.persona}\n\n${INSTRUCTIONS}` : INSTRUCTIONS }] },
           contents,
           tools: [{ fileSearch: { fileSearchStoreNames: [state.storeName] } }]
         },

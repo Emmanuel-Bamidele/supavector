@@ -84,18 +84,31 @@ function loadCheckpoint(file) {
   return new Map(rows.filter((r) => !r.error).map((r) => [r.id, r]));
 }
 
-async function runAnswers(system, queries, { concurrency, judge, checkpoint, log }) {
+async function runAnswers(system, queries, { concurrency, judge, checkpoint, log, docTexts = new Map() }) {
   const done = loadCheckpoint(checkpoint);
   if (done.size) log(`resuming: ${done.size} answers already graded in ${path.basename(checkpoint)}`);
   return mapLimit(queries, concurrency, async (q) => {
     if (done.has(q.id)) return done.get(q.id);
-    const row = await answerOne(system, q, judge);
+    const row = await answerOne(system, q, judge, docTexts);
     if (checkpoint) fs.appendFileSync(checkpoint, `${JSON.stringify(row)}\n`);
     return row;
   });
 }
 
-async function answerOne(system, q, judge) {
+// Citation accuracy at the document level, the one level every system's
+// citations share: does the answer cite a document holding the answer (the
+// gold passage, or a labelled evidence document), and what share of the
+// documents it cites do?
+function scoreCitations(q, citations, docTexts) {
+  if (q.answer === undefined || /insufficient information/i.test(String(q.answer))) return { citationHit: null, citationPrecision: null };
+  const cited = [...new Set((citations || []).map((c) => c?.docId).filter(Boolean))];
+  if (!cited.length) return { citationHit: false, citationPrecision: null };
+  const holds = (docId) => (q.quote ? evidenceHit(q.quote, [{ text: docTexts.get(docId) || "" }]) : q.relevance.has(docId));
+  const good = cited.filter(holds).length;
+  return { citationHit: good > 0, citationPrecision: good / cited.length };
+}
+
+async function answerOne(system, q, judge, docTexts = new Map()) {
   const started = Date.now();
   let answer = { text: "", citations: [], contexts: [] };
   let error = null;
@@ -119,6 +132,7 @@ async function answerOne(system, q, judge) {
     contextRecall: relevant.length ? relevant.filter((id) => contextDocs.has(id)).length / relevant.length : null,
     evidenceHit: q.quote ? evidenceHit(q.quote, answer.contexts) : null,
     citations: answer.citations,
+    ...scoreCitations(q, answer.citations, docTexts),
     latencyMs,
     error
   };
@@ -177,7 +191,8 @@ async function main() {
     // "none" skips grading: context recall alone, e.g. with a cheap --model.
     const judge = args["judge-model"] === "none" ? null : createJudge({ model: args["judge-model"] });
     result.judgeModel = judge ? judge.model : "none";
-    const rows = await runAnswers(system, queries, { concurrency: Math.min(concurrency, 4), judge, checkpoint, log });
+    const docTexts = new Map(dataset.docs.map((d) => [d.docId, d.text]));
+    const rows = await runAnswers(system, queries, { concurrency: Math.min(concurrency, 4), judge, checkpoint, log, docTexts });
     result.answers = summarizeAnswers(rows);
     result.answerRows = rows;
   }

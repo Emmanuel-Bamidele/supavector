@@ -98,6 +98,11 @@ function summarizeAnswers(rows) {
     accuracy_by_type: Object.fromEntries(Object.entries(byType).map(([t, v]) => [t, { n: v.length, accuracy: mean(v) }])),
     context_recall: mean(rows.map((r) => r.contextRecall)),
     evidence_hit: mean(rows.map((r) => (r.evidenceHit === null ? NaN : r.evidenceHit ? 1 : 0))),
+    // Answerable questions only: cites a document holding the answer; share of
+    // cited documents that hold it; answers that cite nothing.
+    citation_hit: mean(rows.map((r) => (r.citationHit === null || r.citationHit === undefined ? NaN : r.citationHit ? 1 : 0))),
+    citation_precision: mean(rows.map((r) => (Number.isFinite(r.citationPrecision) ? r.citationPrecision : NaN))),
+    uncited: mean(rows.map((r) => (r.citationHit === null || r.citationHit === undefined ? NaN : r.citationPrecision === null ? 1 : 0))),
     latency_ms_p50: percentile(rows.map((r) => r.latencyMs), 50),
     latency_ms_p95: percentile(rows.map((r) => r.latencyMs), 95),
     errors: rows.filter((r) => r.error).length
