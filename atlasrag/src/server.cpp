@@ -768,12 +768,20 @@ int main()
 
   asio::io_context io;
 
-  // Listen on port 6379
+  // ATLASRAG_PORT overrides the listen port (default 6379). A second process
+  // on another port is how a side-by-side re-index runs next to the live one.
+  unsigned short port = 6379;
+  const char* port_env = std::getenv("ATLASRAG_PORT");
+  if (port_env && std::string(port_env).size()) {
+    const int parsed = std::atoi(port_env);
+    if (parsed > 0 && parsed < 65536) port = static_cast<unsigned short>(parsed);
+  }
+
   tcp::acceptor acceptor(
       io,
-      tcp::endpoint(tcp::v4(), 6379));
+      tcp::endpoint(tcp::v4(), port));
 
-  std::cout << "AtlasRAG listening on port 6379...\n";
+  std::cout << "AtlasRAG listening on port " << port << "...\n";
 
   // Accept clients forever
   while (true) {
