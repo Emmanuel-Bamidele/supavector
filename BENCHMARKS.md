@@ -1,8 +1,9 @@
 # SupaVector benchmarks
 
 Results from 14–15 October 2026. SupaVector 1.1 was measured against OpenAI file
-search and against SupaVector 0.3, the previous release, and also run with
-Claude as its answer model. Every system ran through one open harness (`eval/`)
+search, Google's Gemini File Search and SupaVector 0.3 (the previous release),
+and also run with Claude and Gemini as its answer model. A long-conversation
+memory benchmark (LoCoMo) and the Supavector app's own AIs complete the set. Every system ran through one open harness (`eval/`)
 on the same questions with the same metrics. Every answer was graded twice, by
 judges from two vendors: OpenAI's `gpt-4o` and Anthropic's `claude-opus-5-5`.
 Per-question results for every number here are in
@@ -11,14 +12,21 @@ reproduce them are at the end.
 
 ## Summary
 
-| | SupaVector 1.1 | OpenAI file search | SupaVector 0.3 |
-|---|---|---|---|
-| BEIR SciFact retrieval, nDCG@10 | **0.758**, 0.799 with reranker | 0.712 | 0.003 |
-| MultiHop-RAG retrieval, nDCG@10 | **0.758**, 0.797 with reranker | 0.731 | 0.066 |
-| MultiHop-RAG answer accuracy, Claude Opus 5.5 judge | **84.5%** | 77.5% | 41.0% |
-| MultiHop-RAG answer accuracy, gpt-4o judge | **82.0%** | 77.5% | 44.5% |
-| MultiHop-RAG questions about time order | **54.8%** | 40.5% | 11.9% |
-| Answer latency, median / 95th percentile | **4.3 s / 6.7 s** | 6.6 s / 35.5 s | 18.4 s / 29.0 s |
+| | SupaVector 1.1 | Gemini File Search | OpenAI file search | SupaVector 0.3 |
+|---|---|---|---|---|
+| Answer model | gpt-5.2 | Gemini 4 Argon | gpt-5.2 | gpt-5.2 |
+| BEIR SciFact retrieval, nDCG@10 | **0.758**, 0.799 with reranker | no search API | 0.712 | 0.003 |
+| MultiHop-RAG retrieval, nDCG@10 | **0.758**, 0.797 with reranker | no search API | 0.731 | 0.066 |
+| MultiHop-RAG answer accuracy, Claude Opus 5.5 judge | 84.5% | **87.5%** | 77.5% | 41.0% |
+| MultiHop-RAG answer accuracy, gpt-4o judge | 82.0% | **84.5%** | 77.5% | 44.5% |
+| MultiHop-RAG questions about time order (gpt-4o judge) | 54.8% | **73.8%** | 40.5% | 11.9% |
+| Answer latency, median / 95th percentile | **4.3 s / 6.7 s** | 26.7 s / 203.6 s | 6.6 s / 35.5 s | 18.4 s / 29.0 s |
+| Search latency, 95th percentile (SciFact / MultiHop-RAG) | **372 / 396 ms** | — | 1.4 / 1.5 s median | 7.5 / 6.6 s median |
+
+On LoCoMo (long-term conversation memory) SupaVector answers 84.5% of 200
+questions with 97% of the relevant sessions reaching the answer model; no other
+system was run on it. On the Supavector app's own AIs it answers 90.5%, up
+from 79.5%.
 
 Paired comparisons on the same questions:
 
@@ -38,6 +46,21 @@ Paired comparisons on the same questions:
   points, −7.0 to +3.5; better on 1, worse on 2).
 - **Latency:** median answer time is about a third lower, and the slowest 5% of
   answers come back about five times sooner.
+- **Gemini File Search scores highest on answers, and SupaVector with gpt-5.2 is
+  level with it.** SupaVector is 2.5 points behind under gpt-4o (95% CI −9.0 to
+  +3.5) and 3.0 behind under Claude Opus (−9.5 to +2.5): both intervals include
+  zero. It answers in 4.3 s at the median against Gemini's 26.7 s, and in 6.7 s
+  at the 95th percentile against 203.6 s.
+- **With the same answer model, Gemini File Search is ahead.** SupaVector with
+  Gemini 4 Argon scores 77.0% (gpt-4o) and 82.0% (Claude Opus): 7.5 points
+  behind Gemini File Search (−14.0 to −1.5) and 5.5 behind (−10.0 to −1.0). Most
+  of the gap is questions about time order. In 18 of the 24 questions Gemini File
+  Search answered and SupaVector didn't, an article the question named never
+  reached SupaVector's answer model. Gemini File Search searches in several
+  rounds, which is also why it takes longer; SupaVector searches once per part
+  of the question.
+- **Both beat OpenAI file search.** Gemini File Search by 7.0 points (gpt-4o,
+  +1.0 to +13.0) and 10.0 (Claude Opus, +4.0 to +15.5).
 - **Against SupaVector 0.3**, answer accuracy rises 37.5 points under gpt-4o
   (+30.0 to +44.5; better on 83 questions, worse on 8) and 43.5 under Claude Opus
   (+35.0 to +51.0).
@@ -70,6 +93,18 @@ vector store search endpoint. The adapter is
 `claude-sonnet-5-5` writing the answers through the gateway's Anthropic provider
 (`provider: "anthropic"` on `/v1/ask`).
 
+**SupaVector 1.1 with Gemini 4 Argon.** The same retrieval and passages, with
+`gemini-4-argon` writing the answers (`provider: "gemini"`): the same model as
+Gemini File Search, so the two differ only in retrieval and prompting.
+
+**Gemini File Search.** The Gemini API's file search tool over one file search
+store, with Google's default chunking. Each corpus document was uploaded as one
+document named by its id, and answers came from `gemini-4-argon` through
+`generateContent` with the same instruction as OpenAI file search. The tool has
+no search-only endpoint, so it has no retrieval score; "relevant documents
+reaching the answer model" counts its grounding chunks. The adapter is
+[`eval/systems/gemini_file_search.js`](eval/systems/gemini_file_search.js).
+
 **SupaVector 0.3**, the previous release, on the same embedding and answer model.
 
 ## Datasets and metrics
@@ -97,8 +132,10 @@ vector store search endpoint. The adapter is
   questions ([`eval/compare.js`](eval/compare.js)).
 - **Latency:** wall-clock time per request, measured by the harness on one
   machine. SupaVector (gateway, Postgres and vector server) ran on that machine
-  and called OpenAI's API for embeddings and generation. OpenAI file search ran in
-  OpenAI's cloud.
+  and called OpenAI's (or Anthropic's, or Google's) API for embeddings and
+  generation. OpenAI file search and Gemini File Search ran in their vendors'
+  clouds. Gemini 4 Argon thinks before answering, which is part of Gemini File
+  Search's latency.
 
 ## Retrieval
 
@@ -146,37 +183,80 @@ their dates.
 MultiHop-RAG, 200 questions. Each cell gives the score from the gpt-4o judge,
 then the score from the Claude Opus 5.5 judge.
 
-| | SupaVector 1.1 (gpt-5.2) | SupaVector 1.1 (Claude Sonnet 5.5) | OpenAI file search (gpt-5.2) | SupaVector 0.3 (gpt-5.2) |
-|---|---|---|---|---|
-| All questions | **82.0% / 84.5%** | 77.5% / 81.0% | 77.5% / 77.5% | 44.5% / 41.0% |
-| Time order (42) | 54.8% / 57.1% | **69.0% / 69.0%** | 40.5% / 40.5% | 11.9% / 7.1% |
-| Comparison (78) | **80.8% / 84.6%** | 64.1% / 67.9% | 75.6% / 74.4% | 19.2% / 11.5% |
-| Inference (57) | 96.5% / 98.2% | 93.0% / **100%** | **98.2% / 100%** | 80.7% / 82.5% |
-| Unanswerable (23) | 100% / 100% | 100% / 100% | 100% / 100% | 100% / 100% |
-| Judges agree on | 95.5% of answers | 92.5% | 97.0% | 94.5% |
-| Relevant documents reaching the answer model | 85.5% | 85.2% | 87.5% | 14.9% |
-| Median / 95th percentile answer time | **4.3 s / 6.7 s** | 6.2 s / 11.3 s | 6.6 s / 35.5 s | 18.4 s / 29.0 s |
+| System (answer model) | All questions | Time order (42) | Comparison (78) | Inference (57) | Unanswerable (23) | Judges agree | Relevant docs reaching the model | Answer time, median / p95 |
+|---|---|---|---|---|---|---|---|---|
+| Gemini File Search (Gemini 4 Argon) | **84.5% / 87.5%** | **73.8% / 76.2%** | 74.4% / 80.8% | **100% / 100%** | 100% / 100% | 95.0% | 79.1%¹ | 26.7 s / 203.6 s |
+| SupaVector 1.1 (gpt-5.2) | 82.0% / 84.5% | 54.8% / 57.1% | **80.8% / 84.6%** | 96.5% / 98.2% | 100% / 100% | 95.5% | 85.5% | **4.3 s / 6.7 s** |
+| SupaVector 1.1 (Claude Sonnet 5.5) | 77.5% / 81.0% | 69.0% / 69.0% | 64.1% / 67.9% | 93.0% / 100% | 100% / 100% | 92.5% | 85.2% | 6.2 s / 11.3 s |
+| SupaVector 1.1 (Gemini 4 Argon) | 77.0% / 82.0% | 61.9% / 61.9% | 71.8% / 74.4% | 86.0% / 100% | 100% / 100% | 94.0% | 84.7% | 8.0 s / 22.6 s |
+| OpenAI file search (gpt-5.2) | 77.5% / 77.5% | 40.5% / 40.5% | 75.6% / 74.4% | 98.2% / 100% | 100% / 100% | 97.0% | 87.5% | 6.6 s / 35.5 s |
+| SupaVector 0.3 (gpt-5.2) | 44.5% / 41.0% | 11.9% / 7.1% | 19.2% / 11.5% | 80.7% / 82.5% | 100% / 100% | 94.5% | 14.9% | 18.4 s / 29.0 s |
 
-Paired, against OpenAI file search on the same questions:
+¹ Gemini File Search's grounding chunks, which may be fewer than the passages its
+model read.
+
+Paired, on the same questions (points of accuracy, 95% CI):
 
 | | gpt-4o judge | Claude Opus 5.5 judge |
 |---|---|---|
-| SupaVector 1.1 (gpt-5.2) | +4.5 points (−0.5 to +9.5) | **+7.0 points (+1.5 to +12.0)** |
-| SupaVector 1.1 (Claude Sonnet 5.5) | 0.0 points (−6.0 to +6.5) | +3.5 points (−2.0 to +9.5) |
+| SupaVector (gpt-5.2) − OpenAI file search | +4.5 (−0.5 to +9.5) | **+7.0 (+1.5 to +12.0)** |
+| SupaVector (gpt-5.2) − Gemini File Search | −2.5 (−9.0 to +3.5) | −3.0 (−9.5 to +2.5) |
+| SupaVector (Gemini 4 Argon) − Gemini File Search | **−7.5 (−14.0 to −1.5)** | **−5.5 (−10.0 to −1.0)** |
+| SupaVector (Claude Sonnet 5.5) − OpenAI file search | 0.0 (−6.0 to +6.5) | +3.5 (−2.0 to +9.5) |
 
-- **The two judges agree.** Each system's grades from the two judges match on
-  92.5–97.0% of answers. Claude Opus grades SupaVector a little higher than
-  gpt-4o does (84.5% vs 82.0%), and OpenAI file search exactly the same (77.5%).
-  OpenAI's judge does not favour OpenAI's product, and Anthropic's judge does
-  not favour Claude's answers over gpt-5.2's.
-- **With Claude writing the answers, SupaVector is level with OpenAI file search**
-  under gpt-4o and ahead under Claude Opus, though neither interval excludes
-  zero. Claude gives the best time-order score of any system (69.0%) and trails
-  on comparisons. Asked a two-part yes-or-no question, it answers each part
-  separately and holds each to the letter, where the reference expects one
-  overall answer. SupaVector's answer rules were tuned with gpt-5.2. With
-  gpt-5.2 it scores 4.5 points higher under gpt-4o (−2.0 to +10.5) and 3.5 under
-  Claude Opus (−2.0 to +9.5).
+- **The two judges agree** on 92.5–97.0% of each system's answers. Neither
+  favours its own vendor's product: gpt-4o and Claude Opus give OpenAI file
+  search the same 77.5%, and Claude Opus grades gpt-5.2's answers above Claude
+  Sonnet's.
+- **The answer model matters as much as retrieval.** On SupaVector's retrieval,
+  gpt-5.2 scores highest; Claude Sonnet 5.5 gives the best time-order score of
+  the three but answers two-part yes-or-no questions part by part and holds each
+  to the letter, where the reference expects one overall answer. SupaVector's
+  answer rules were tuned with gpt-5.2.
+- **Where Gemini File Search wins.** With the same model, its several rounds of
+  search find articles a question names (a given outlet's report on a given
+  day) that SupaVector's single round misses. That is the clearest gap left.
+
+## Long conversations (LoCoMo)
+
+[LoCoMo](https://github.com/snap-research/locomo): 10 long conversations split
+into 272 sessions (about 222k tokens), and 200 of its 1,540 questions
+(categories 1–4; the adversarial category is excluded, as in most published
+comparisons). Each question searches only its own conversation. Judged by
+`gpt-4o`.
+
+| | SupaVector 1.1 (retrieval) | SupaVector 1.1 (full context) |
+|---|---|---|
+| All questions | **84.5%** (79.5–89.0) | **84.5%** |
+| Single-hop (113) | 90.3% | 92.0% |
+| Time-related (37) | 86.5% | 83.8% |
+| Multi-hop (38) | 73.7% | 71.1% |
+| Open-domain (12) | 58.3% | 58.3% |
+| Relevant sessions reaching the answer model | 97.4% | 100% |
+| Answer time, median / p95 | 1.9 s / 3.5 s | 1.6 s / 3.3 s |
+
+Retrieval: nDCG@10 0.784, recall@10 0.932, median search 247 ms.
+
+Full-context mode sends a whole conversation (up to 150,000 characters) instead
+of retrieving from it. It scored the same (paired 0.0 points, −3.5 to +4.0;
+better on 9 questions, worse on 9) while sending about twice the tokens, so it
+stays off by default. No other system was run on LoCoMo here; published LoCoMo
+scores use other answer models and judges and are not comparable.
+
+## Search speed
+
+`/v1/search`, measured by the harness on one machine; every search includes the
+query embedding round trip to OpenAI (about 210–360 ms from that machine).
+
+| | Median | 95th percentile |
+|---|---|---|
+| BEIR SciFact (300 queries) | 264 ms | 372 ms |
+| MultiHop-RAG (200 queries) | 289 ms | 396 ms |
+| LoCoMo (200 queries, one conversation each) | 247 ms | 398 ms |
+
+The query embedding is requested first and awaited only by the vector search,
+and keyword search runs alongside it. Before that change the 95th percentile was
+586 ms on SciFact and 677 ms on MultiHop-RAG, with the same results.
 
 ## How we got here
 
@@ -240,33 +320,50 @@ queries are semantic, so keyword search adds little there. It is kept for the
 exact names, numbers and identifiers people search their own documents for.
 Dense-only search has not been measured on MultiHop-RAG.
 
+**The document's publisher in every chunk header** (e.g. `Source: The Verge`),
+to match questions that name an outlet. It made things worse: relevant
+documents reaching the answer model fell 2.5 points (−4.3 to −0.8; better on 5
+questions, worse on 15) and nDCG@10 went from 0.758 to 0.755. Every chunk from
+one outlet gained the same words, which does not single out the article a
+question means. It was reverted.
+
 ## Product sets
 
 Seven Supavector AIs, each answering 30 questions written from its own
 documents: single questions, follow-ups that depend on the conversation, and
-questions their documents can't answer. These sets are internal and not
-published. They were measured on a development build (LLM reranker, 7
-passages, earlier answer rules).
+questions their documents can't answer. Each question is sent the way the
+Supavector app sends it: the AI's persona (its name and tone), the visitor's
+clock, 20 passages. The sets are internal and not published. Judged by
+`gpt-4o`.
 
-| AI | SupaVector 0.3 | SupaVector 1.1 (development build) |
+| AI | SupaVector 0.3 | SupaVector 1.1 |
 |---|---|---|
-| Bedtime Storyteller | 73.3% | 76.7% |
+| Bedtime Storyteller | 73.3% | 93.3% |
 | Buy or Pass | 96.7% | 96.7% |
 | Drive Buddy | 76.7% | 93.3% |
 | Game Night Host | 63.3% | 76.7% |
-| New Job Coach | 90.0% | 96.7% |
-| Plant Pal | 76.7% | 96.7% |
+| New Job Coach | 90.0% | 90.0% |
+| Plant Pal | 76.7% | 93.3% |
 | Study Buddy | 80.0% | 90.0% |
-| **All 210 questions** | **79.5%** | **89.5%** |
+| **All 210 questions** | **79.5%** | **90.5%** |
 | Follow-up questions (42) | 64.3% | 95.2% |
-| Gold passage reaching the answer model, per AI | 44–96% | 81–100% |
-| Median answer time, per AI | 12–28 s | 4–5 s |
+| Questions to decline (21) | 100% | 100% |
+| Gold passage reaching the answer model, per AI | 44–96% | 89–100% |
+| Median answer time, per AI | 12–28 s | 3–9 s |
+
+Some answers marked wrong are the persona working as its owner wrote it:
+Game Night Host and New Job Coach ask about the group or the job before
+answering, and Buy or Pass adds a not-financial-advice line. SupaVector 0.3
+ran without personas.
 
 ## Limitations
 
-- **One external system so far.** OpenAI file search is the only other system
-  measured. We'll add others through the same harness. This report makes no
-  claim about systems it hasn't run.
+- **Two external systems so far:** OpenAI file search and Gemini File Search.
+  This report makes no claim about systems it hasn't run.
+- **Gemini File Search answers with its own model.** Gemini 4 Argon is not
+  available in OpenAI file search, and Gemini File Search accepts only Gemini
+  models, so its headline row compares different answer models. The
+  SupaVector (Gemini 4 Argon) row is the same-model comparison.
 - **Sample size.** MultiHop-RAG answers use 200 of 2,556 questions. The answer
   lead over OpenAI file search is positive under both judges, but its interval
   excludes zero only under Claude Opus. The full question set would settle it.
@@ -300,6 +397,12 @@ node eval/run.js --dataset beir:scifact --system openai-file-search --mode retri
 node eval/run.js --dataset multihop-rag --system supavector --mode answer --limit 200 --answer-k 20 --citation-mode numbered --label mine
 node eval/run.js --dataset multihop-rag --system openai-file-search --mode both --limit 200 --label mine
 
+# Gemini File Search (GEMINI_API_KEY); answers only, it has no search endpoint
+node eval/run.js --dataset multihop-rag --system gemini-file-search --mode answer --limit 200 --label mine
+
+# Long conversations
+node eval/run.js --dataset locomo --system supavector --mode both --limit 200 --answer-k 20 --citation-mode numbered --label mine
+
 # SupaVector with Claude writing the answers (gateway needs ANTHROPIC_API_KEY)
 node eval/run.js --dataset multihop-rag --system supavector --mode answer --limit 200 --answer-k 20 --provider anthropic --model claude-sonnet-5-5 --citation-mode numbered --label mine-claude
 
@@ -330,5 +433,6 @@ text; the ids join back to the public datasets.
 - `judge-claude-opus-5-5/`: the headline answer runs graded by Claude Opus 5.5.
   `supavector-v2-claude-sonnet-5-5` is SupaVector 1.1 with Claude writing the
   answers.
+- `locomo/`: the LoCoMo runs, retrieval and full context.
 - `history/`: the earlier steps in "How we got here", numbered to match.
 - `ablations/`: the boost-scale sweep and the retrieval-leg comparison.
