@@ -347,8 +347,25 @@ MultiHop-RAG (LoCoMo 0.932 vs 0.926). Search time is unchanged (MultiHop-RAG
 median 287 ms vs 289 ms). With Gemini's embeddings and no reranker, MultiHop-RAG
 retrieval (0.813) beats SupaVector with the reranker (0.797) and OpenAI file
 search (0.731). Answer accuracy with Gemini's embeddings has not been measured
-yet. The MultiHop-RAG baseline here is the same index rebuilt for this test, so
-its contexts were regenerated (0.756 against 0.758 in the headline run).
+yet with SupaVector's default answer model. The MultiHop-RAG baseline here is
+the same index rebuilt for this test, so its contexts were regenerated (0.756
+against 0.758 in the headline run).
+
+With the same answer model as Gemini File Search (Gemini 4 Argon) and graded by
+Claude Opus 5.5, Gemini's embeddings close most of the gap:
+
+| MultiHop-RAG, 200 questions, Claude Opus 5.5 judge | Accuracy | Time order | Relevant docs reaching the model |
+|---|---|---|---|
+| Gemini File Search | 87.5% | 76.2% | 79.1% |
+| SupaVector, gemini-embedding-2 | 84.0% (78.5–88.5) | 76.2% | 88.5% |
+| SupaVector, text-embedding-3-large | 82.0% | 61.9% | 84.7% |
+
+Against Gemini File Search the difference goes from −5.5 points (−10.0 to −1.0)
+to −3.5 (−8.0 to +1.0), no longer clear of zero. Relevant documents reaching
+the answer model rise 3.7 points over OpenAI's embeddings (+1.5 to +6.0). In
+this run the question planner used `gemini-3.8-flash` instead of
+`gpt-4.1-mini`, because the OpenAI account was out of credit; the gpt-4o judge
+was not run for the same reason.
 
 **A second search round** for multi-part questions (`DEEP_PATH_FOLLOWUP=1`): a
 small model reads what the first round found and searches again for the parts
