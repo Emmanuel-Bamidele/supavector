@@ -258,6 +258,11 @@ app.use((req, res, next) => {
   const incoming = req.header("x-request-id");
   const requestId = incoming ? String(incoming).trim() : crypto.randomUUID();
   req.requestId = requestId;
+  // A caller that forwards work here (the portal proxying to /v1/ask) sends its
+  // own id as the parent, so one user action can be traced across both logs
+  // while each request keeps its own id (and its own usage records).
+  const parent = String(req.header("x-parent-request-id") || "").trim();
+  req.parentRequestId = /^[A-Za-z0-9._:-]{1,128}$/.test(parent) ? parent : null;
   res.setHeader("X-Request-Id", requestId);
   next();
 });
@@ -329,6 +334,7 @@ app.use((req, res, next) => {
       level: "info",
       event: "request",
       request_id: req.requestId || null,
+      ...(req.parentRequestId ? { parent_request_id: req.parentRequestId } : {}),
       method: req.method,
       path: req.originalUrl || req.path,
       status: res.statusCode,
