@@ -4,7 +4,8 @@ const {
   DEFAULT_EMBED_PROVIDER,
   buildResponsesCreateParams,
   normalizeModelId,
-  normalizeProviderId
+  normalizeProviderId,
+  openAiReasoningParam
 } = require("./model_catalog");
 
 const OPENAI_CLIENTS = new Map();
@@ -242,7 +243,7 @@ function ensureGeneratedText(text, { provider, model, jsonMode = false } = {}) {
   throw error;
 }
 
-function buildOpenAiTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens }) {
+function buildOpenAiTextRequestBody({ model, input, temperature, jsonMode = false, maxTokens, reasoningEffort }) {
   const resolvedInput = (input && typeof input === "object" && !Array.isArray(input) && input.system !== undefined)
     ? [{ role: "developer", content: input.system }, { role: "user", content: input.user }]
     : input;
@@ -252,7 +253,8 @@ function buildOpenAiTextRequestBody({ model, input, temperature, jsonMode = fals
     input: resolvedInput,
     temperature,
     ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { max_output_tokens: Math.floor(maxTokens) } : {}),
-    ...(jsonMode ? { text: { format: { type: "json_object" } } } : {})
+    ...(jsonMode ? { text: { format: { type: "json_object" } } } : {}),
+    ...(openAiReasoningParam(model, reasoningEffort) ? { reasoning: openAiReasoningParam(model, reasoningEffort) } : {})
   });
 }
 
@@ -422,7 +424,7 @@ async function fetchEventStream(url, options = {}, { onEvent = null } = {}) {
     dispose();
   }
 }
-async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens, onToken, signal }) {
+async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonMode = false, maxTokens, reasoningEffort, onToken, signal }) {
   const client = getOpenAIClient(apiKey);
   if (typeof onToken === "function") {
     const stream = client.responses.stream(buildOpenAiTextRequestBody({
@@ -430,7 +432,8 @@ async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonM
       input,
       temperature,
       jsonMode,
-      maxTokens
+      maxTokens,
+      reasoningEffort
     }), { signal });
     for await (const event of stream) {
       if (event?.type !== "response.output_text.delta") continue;
@@ -454,7 +457,8 @@ async function generateTextWithOpenAI({ model, input, apiKey, temperature, jsonM
     input,
     temperature,
     jsonMode,
-    maxTokens
+    maxTokens,
+    reasoningEffort
   }), { signal });
   return {
     text: ensureGeneratedText(extractOpenAiText(resp), { provider: "openai", model, jsonMode }),
@@ -703,6 +707,7 @@ async function generateProviderText({
   temperature,
   jsonMode = false,
   maxTokens,
+  reasoningEffort,
   maxRetries,
   retryDelayMs,
   retryOnEmptyText = true,
@@ -744,6 +749,7 @@ async function generateProviderText({
         temperature,
         jsonMode,
         maxTokens,
+        reasoningEffort,
         onToken: forwardToken,
         signal
       });

@@ -678,10 +678,26 @@ function testOpenAiRequestBuilderOmitsUnsupportedTemperature() {
   assert.deepEqual(legacyBody.text, { format: { type: "json_object" } });
 }
 
+// "lowest" means no hidden reasoning in whichever spelling the model family
+// takes; unset leaves the API default; non-reasoning models never get the param.
+function testOpenAiReasoningEffort() {
+  const body = (model, reasoningEffort) =>
+    __testHooks.buildOpenAiTextRequestBody({ model, input: "hi", reasoningEffort });
+  assert.deepEqual(body("gpt-5-mini", "lowest").reasoning, { effort: "minimal" });
+  assert.deepEqual(body("gpt-5.2", "lowest").reasoning, { effort: "none" });
+  assert.deepEqual(body("o4-mini", "lowest").reasoning, { effort: "low" });
+  assert.deepEqual(body("gpt-5-mini", "high").reasoning, { effort: "high" });
+  assert.equal(body("gpt-5-mini", undefined).reasoning, undefined);
+  assert.equal(body("gpt-4.1-mini", "lowest").reasoning, undefined);
+  assert.equal(body("gpt-5-chat-latest", "lowest").reasoning, undefined);
+  assert.equal(body("gpt-5-mini", "bogus").reasoning, undefined);
+}
+
 async function main() {
   testResolveProviderApiKeyAliases();
   testProviderClientHooks();
   testOpenAiRequestBuilderOmitsUnsupportedTemperature();
+  testOpenAiReasoningEffort();
   await testGeminiGeneration();
   await testAnthropicGeneration();
   await testGeminiGenerationRetriesTransientFailure();
