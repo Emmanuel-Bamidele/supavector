@@ -475,6 +475,7 @@ module.exports = {
   normalizeProviderId,
   normalizeReasoningEffort,
   openAiReasoningParam,
+  REASONING_EFFORTS,
   listGenerationProviders,
   listEmbeddingProviders,
   listGenerationModelPresets,
