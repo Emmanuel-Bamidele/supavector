@@ -948,6 +948,19 @@
           "provider": {
             "$ref": "#/components/schemas/GenerationProviderId"
           },
+          "reasoningEffort": {
+            "type": "string",
+            "enum": [
+              "lowest",
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "description": "How hard an OpenAI reasoning model (gpt-5 family, o-series) thinks before answering. Unset uses the instance's ANSWER_REASONING_EFFORT, else the model's API default: none for gpt-5.1 and later, medium for gpt-5, gpt-5-mini and gpt-5-nano. lowest is the cheapest setting the model accepts (none, minimal or low by family). Other providers and non-reasoning models ignore it."
+          },
           "policy": {
             "$ref": "#/components/schemas/MemoryPolicy"
           },

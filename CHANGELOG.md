@@ -47,6 +47,7 @@ from 18.4 s to 4.2 s; with `k: 20` it reaches 82.0%. Full results:
 - `eval/`: a reproducible benchmark harness (BEIR, MultiHop-RAG, LoCoMo, product sets, OpenAI file search adapter) with paired comparisons, resumable answer runs, question-type subsets and merging.
 - Multi-part questions keep each part's best passage in the answer context, so one part's many strong passages can't crowd out another part's only one.
 - SDKs: `askStream` / `ask_stream` and re-ingest helpers.
+- `reasoningEffort` on `/v1/ask` for OpenAI reasoning models (gpt-5 family, o-series): `lowest`, `none`, `minimal`, `low`, `medium`, `high` or `xhigh`, with `ANSWER_REASONING_EFFORT` as the instance default. Unset keeps the model's API default (none for gpt-5.1 and later, medium for gpt-5, gpt-5-mini and gpt-5-nano); `lowest` picks the cheapest setting each family accepts, so a gpt-5-mini answer need not think at length before every reply. Other providers and non-reasoning models ignore it.
 
 ### Changed
 

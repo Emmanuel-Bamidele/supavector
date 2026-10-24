@@ -4,6 +4,8 @@
 //     docId#N (supavector-portal/tests/gateway_contract.test.js pins the same).
 //   - Ask citations: every field the gateway emits is documented in
 //     openapi.json, which the SDKs and supavector-one are built from.
+//   - Ask reasoningEffort: openapi.json lists exactly the values /v1/ask
+//     accepts (the portal checks them too, in its gateway_contract.test.js).
 
 const assert = require("assert/strict");
 
@@ -12,6 +14,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "test-jwt-secret";
 
 const { __testHooks } = require("../index");
 const { splitChunkId } = require("../answer_context");
+const { REASONING_EFFORTS, normalizeReasoningEffort } = require("../model_catalog");
 const openapi = require("../openapi.json");
 
 function testDocumentAndChunkIds() {
@@ -35,6 +38,13 @@ function testAskCitationsMatchTheSpec() {
   assert.ok(citation.snippet.includes("14 days"));
 }
 
+function testAskReasoningEffortsMatchTheSpec() {
+  const documented = openapi.components.schemas.AskRequest.properties.reasoningEffort.enum;
+  assert.deepEqual(documented, [...REASONING_EFFORTS]);
+  for (const effort of documented) assert.equal(normalizeReasoningEffort(effort), effort);
+}
+
 testDocumentAndChunkIds();
 testAskCitationsMatchTheSpec();
+testAskReasoningEffortsMatchTheSpec();
 console.log("contract tests passed");
