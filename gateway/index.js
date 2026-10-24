@@ -141,6 +141,7 @@ const {
   hasTenantModelSettingsInput,
   resolveRequestedGenerationConfig
 } = require("./model_config");
+const { normalizeReasoningEffort } = require("./model_catalog");
 const {
   INSTANCE_ADMIN_ROLE,
   ENTERPRISE_ROLE_VALUES,
@@ -8108,6 +8109,7 @@ async function answerQuestion({
   embedApiKey,
   model,
   provider,
+  reasoningEffort,
   models,
   onToken
 }) {
@@ -8172,6 +8174,7 @@ async function answerQuestion({
     apiKey: generationApiKey,
     provider: requestedAnswerConfig.provider,
     model: requestedAnswerConfig.model,
+    reasoningEffort,
     answerLength,
     citationMode,
     grounding,
@@ -13861,6 +13864,14 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
   if (!citationMode) {
     return sendError(res, 400, "citationMode must be one of: inline, metadata, numbered", "INVALID_INPUT", null, null);
   }
+  // Optional: how hard an OpenAI reasoning model thinks before answering.
+  const rawReasoningEffort = req.body?.reasoningEffort;
+  const reasoningEffort = rawReasoningEffort === undefined || rawReasoningEffort === null || rawReasoningEffort === ""
+    ? undefined
+    : normalizeReasoningEffort(rawReasoningEffort);
+  if (reasoningEffort === null) {
+    return sendError(res, 400, "reasoningEffort must be one of: lowest, none, minimal, low, medium, high, xhigh", "INVALID_INPUT", null, null);
+  }
 
   let history = [];
   let background = null;
@@ -13939,6 +13950,7 @@ app.post("/v1/ask", requireJwt, requireRole("reader"), async (req, res) => {
       timeField: retrievalFilters.timeField,
       model,
       provider,
+      reasoningEffort,
       models: effectiveModels,
       generationApiKey,
       generationBillable: !isRequestScopedProviderUsage(generationApiKey),

@@ -1024,6 +1024,8 @@ async function generateAnswer(question, chunks, options = {}) {
       apiKey: options?.apiKey,
       temperature: 0.2,
       maxTokens: answerMaxTokens,
+      // Per request, else the gateway default; unset keeps the API default.
+      reasoningEffort: options?.reasoningEffort ?? process.env.ANSWER_REASONING_EFFORT,
       onToken: forwardToken,
       signal: options?.signal
     });

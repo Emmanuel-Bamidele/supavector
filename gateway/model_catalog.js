@@ -426,6 +426,34 @@ function buildPublicModelCatalog() {
   };
 }
 
+/*
+ * Reasoning effort for OpenAI reasoning models (gpt-5 family, o-series).
+ * Unset means the API default, which differs by model: none for gpt-5.1 and
+ * later, medium for gpt-5 / gpt-5-mini / gpt-5-nano. "lowest" asks for the
+ * cheapest, fastest setting each family accepts, so a caller can say "no
+ * hidden reasoning" without knowing which spelling the model takes.
+ */
+const REASONING_EFFORTS = new Set(["lowest", "none", "minimal", "low", "medium", "high", "xhigh"]);
+
+function normalizeReasoningEffort(value) {
+  const clean = String(value || "").trim().toLowerCase();
+  return REASONING_EFFORTS.has(clean) ? clean : null;
+}
+
+/** The Responses API `reasoning` param for this model, or null to send none. */
+function openAiReasoningParam(model, effort) {
+  const requested = normalizeReasoningEffort(effort);
+  if (!requested) return null;
+  const id = String(model || "").trim().toLowerCase();
+  if (id.includes("-chat")) return null; // chat snapshots take no reasoning param
+  const gpt5 = /^gpt-5(?:\.(\d+))?(?:-|$)/.exec(id);
+  const oSeries = /^o\d/.test(id);
+  if (!gpt5 && !oSeries) return null; // not a reasoning model
+  if (requested !== "lowest") return { effort: requested };
+  if (oSeries) return { effort: "low" };
+  return { effort: gpt5[1] && Number(gpt5[1]) >= 1 ? "none" : "minimal" };
+}
+
 module.exports = {
   CUSTOM_MODEL_SENTINEL,
   DEFAULT_ANSWER_PROVIDER,
@@ -445,6 +473,8 @@ module.exports = {
   EMBEDDING_MODEL_PRESETS_BY_PROVIDER,
   normalizeModelId,
   normalizeProviderId,
+  normalizeReasoningEffort,
+  openAiReasoningParam,
   listGenerationProviders,
   listEmbeddingProviders,
   listGenerationModelPresets,
