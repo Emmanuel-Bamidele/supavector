@@ -87,15 +87,20 @@ function summarizeRetrieval(rows, ks = [5, 10, 20]) {
 function summarizeAnswers(rows) {
   const correct = rows.map((r) => (r.correct === null ? NaN : r.correct ? 1 : 0));
   const byType = {};
-  for (const r of rows) {
-    const t = r.type || "all";
-    (byType[t] ||= []).push(r.correct === null ? NaN : r.correct ? 1 : 0);
-  }
+  for (const r of rows) (byType[r.type || "all"] ||= []).push(r);
+  const rate = (list, key) => mean(list.map((r) => (r[key] === null || r[key] === undefined ? NaN : r[key] ? 1 : 0)));
   return {
     queries: rows.length,
     accuracy: mean(correct),
     accuracy_ci95: bootstrapCi(correct),
-    accuracy_by_type: Object.fromEntries(Object.entries(byType).map(([t, v]) => [t, { n: v.length, accuracy: mean(v) }])),
+    // Declines and general-knowledge flags per type: how a scope rule actually
+    // played out, not only whether the judge accepted it.
+    accuracy_by_type: Object.fromEntries(Object.entries(byType).map(([t, list]) => [t, {
+      n: list.length,
+      accuracy: rate(list, "correct"),
+      abstained: rate(list, "abstained"),
+      ...(list.some((r) => r.generalFlagged !== null && r.generalFlagged !== undefined) ? { general_flagged: rate(list, "generalFlagged") } : {})
+    }])),
     context_recall: mean(rows.map((r) => r.contextRecall)),
     evidence_hit: mean(rows.map((r) => (r.evidenceHit === null ? NaN : r.evidenceHit ? 1 : 0))),
     // Answerable questions only: cites a document holding the answer; share of
@@ -109,4 +114,22 @@ function summarizeAnswers(rows) {
   };
 }
 
-module.exports = { dedupeDocs, recallAtK, ndcgAtK, mrrAtK, mean, percentile, bootstrapCi, summarizeRetrieval, summarizeAnswers };
+/** Length fit and word counts per question shape ("fact", "explain"). */
+function summarizeLength(rows) {
+  const judged = rows.filter((r) => r.lengthFit);
+  const share = (list, fit) => (list.length ? list.filter((r) => r.lengthFit === fit).length / list.length : NaN);
+  const summarize = (list) => ({
+    n: list.length,
+    right: share(list, "right"),
+    right_ci95: bootstrapCi(list.map((r) => (r.lengthFit === "right" ? 1 : 0))),
+    too_long: share(list, "too_long"),
+    too_short: share(list, "too_short"),
+    words_p50: percentile(list.map((r) => r.words), 50),
+    words_p90: percentile(list.map((r) => r.words), 90)
+  });
+  const byShape = {};
+  for (const r of judged) (byShape[r.shape] ||= []).push(r);
+  return { ...summarize(judged), by_shape: Object.fromEntries(Object.entries(byShape).map(([s, list]) => [s, summarize(list)])) };
+}
+
+module.exports = { dedupeDocs, recallAtK, ndcgAtK, mrrAtK, mean, percentile, bootstrapCi, summarizeRetrieval, summarizeAnswers, summarizeLength };

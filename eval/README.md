@@ -57,6 +57,12 @@ under another label and combine them:
 | `--citation-mode` | SupaVector answer citation mode (`metadata` or `numbered`) |
 | `--judge-model` | Answer judge (default `gpt-4o`, or `EVAL_JUDGE_MODEL`). A `claude-*` model grades through the Anthropic API (`ANTHROPIC_EVAL_API_KEY` or `ANTHROPIC_API_KEY`). `none` skips grading, so a run with a cheap `--model` measures context recall alone |
 | `--model` | SupaVector answer model override for the run |
+| `--provider`, `--reasoning-effort` | Answer provider and reasoning effort for the run, as the product sends them |
+| `--grounding extended` | Let answers use general knowledge when the sources fall short (default strict). Questions with an `expect` block are graded against the behaviour stated for the run's scope |
+| `--answer-length` | `auto` (default), `short`, `medium` or `long` |
+| `--persona` | Answer every question in this voice, as the product does (JSON sets can carry their own) |
+| `--format-judge 1` | Also grade whether each answer's formatting (prose, lists, tables, bold) fits its content |
+| `--length-judge 1` | Also grade whether each answer to a question with a `shape` is the right length, and report words per answer |
 | `--data-dir` | Where downloads go (default `~/.cache/supavector-eval`) |
 
 ## Metrics

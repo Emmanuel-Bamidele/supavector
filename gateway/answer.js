@@ -86,7 +86,45 @@ function codeCitationMode(value) {
   return mode === "numbered" ? "inline" : mode;
 }
 
-function buildAnswerLengthInstruction(answerLength) {
+// A persona answers in chat, where the API's "adaptive" rule (lean long when
+// in doubt) reads as a lecture: the same reply carries tips, caveats and
+// offers nobody asked for. Persona answers get chat-sized rules instead; the
+// API path keeps its rules unchanged, and with them the published benchmarks.
+// supavector-one carries a copy for the turns it prompts itself (lengthRule
+// in server/lib/persona.js).
+// Owners' tone often says "before X, ask Y" — applied to every message, and
+// expanded into a list of options per question, that alone doubles a reply.
+const PERSONA_ASK_RULE = "Ask the visitor something first only when you cannot answer well without it, and then ask briefly: the few things you need, in a sentence or two, without listing options or examples for each.";
+
+const PERSONA_LENGTH_RULES = {
+  auto: [
+    "Length: fit it to the question, the way a knowledgeable person replies in chat.",
+    "A question after one fact, number, name or yes/no gets a sentence or two.",
+    "A how, why or step-by-step question gets what the visitor needs to understand or do it: every step and reason it needs, and nothing it does not.",
+    "Leave out tips, background, alternatives and offers they did not ask for, keep a caveat only when ignoring it would cause a problem, and never say the same thing twice.",
+    PERSONA_ASK_RULE
+  ].join(" "),
+  short: `Length: brief. At most two to four sentences, even for a how or why question. Give the essentials and stop. ${PERSONA_ASK_RULE}`,
+  long: [
+    "Length: detailed. For a how, why or step-by-step question, explain fully: the steps, the reasons behind them, and the examples or edge cases your knowledge supports.",
+    "A question after a single fact still gets a short, direct answer. Never pad or repeat yourself.",
+    PERSONA_ASK_RULE
+  ].join(" ")
+};
+
+// gpt-5-mini sometimes annotates a sentence it could not cite, such as "[No
+// source in the provided documents states this fact]", even when told not to.
+// Citation markers are bare numbers, so a bracket that talks about sources or
+// citing is a note the visitor should never see. Markdown links ("[text](url)")
+// and brackets about anything else are left alone.
+const CITATION_NOTE = /\s*\[(?![\d\s,]+\])[^\]\n]*\b(?:sources?|cit(?:e|ed|ing|ations?)|documents?|materials?|knowledge|provided|files?|excerpts?)\b[^\]\n]*\](?!\()/gi;
+
+function stripCitationNotes(text) {
+  return String(text || "").replace(CITATION_NOTE, "").trim();
+}
+
+function buildAnswerLengthInstruction(answerLength, { persona = false } = {}) {
+  if (persona && PERSONA_LENGTH_RULES[answerLength]) return PERSONA_LENGTH_RULES[answerLength];
   if (answerLength === "auto") {
     return [
       "Target length: adaptive.",
@@ -698,7 +736,7 @@ function buildPrompt(question, chunks, answerLength, citationMode = "inline", ex
     ].filter(Boolean).join("\n");
     return `${header}\n${c.text}`;
   }).join("\n\n---\n\n");
-  const answerLengthInstruction = buildAnswerLengthInstruction(answerLength);
+  const answerLengthInstruction = buildAnswerLengthInstruction(answerLength, { persona: Boolean(String(extras?.persona || "").trim()) });
   const dateInstruction = anyDate
     ? "UPDATED lines show when a source was last indexed. When sources conflict or the question involves timing or validity, weigh newer sources over older ones.\n"
     : "";
@@ -730,14 +768,14 @@ function buildPrompt(question, chunks, answerLength, citationMode = "inline", ex
       ? `Prefer the sources below as your evidence. When they do not contain the answer (or no sources appear at all), you may answer from general knowledge — but say plainly, in your own voice, that you are speaking from general knowledge rather than from what you actually know about this, never blend the two without saying which is which, and never cite a ${numbered ? "source number" : "SOURCE id"} for a general-knowledge statement.`
       : `Prefer the sources below as your evidence. When they do not contain the answer (or no sources appear at all), you may answer from your own general knowledge — but you must say clearly that the information comes from general knowledge rather than the provided sources, never blend the two without saying which is which, and never cite a ${numbered ? "source number" : "SOURCE id"} for a general-knowledge statement.`
     : persona
-      ? `Start with the answer itself; only a yes-or-no question starts with yes or no, one for the whole question. Combine facts from several sources, and compare their dates, when the question needs it, and make a judgment the question asks for — whether things agree, differ or changed — from what you know, even when nobody states it outright. Everything you know is in the knowledge below; facts from anywhere else, even ones you are sure of, are not yours to state. When your knowledge points to an answer, give it without listing details it leaves unconfirmed. If the question asks for several things and your knowledge covers only some, answer those and say briefly which you don't know. Only when your knowledge holds none of the facts it needs, say plainly, in your own voice, that you do not have that information — without mentioning sources, records or documents.`
+      ? `Start with the answer itself; only a yes-or-no question starts with yes or no, one for the whole question. Combine facts from several sources, and compare their dates, when the question needs it, and make a judgment the question asks for — whether things agree, differ or changed — from what you know, even when nobody states it outright. The facts themselves must come from your knowledge: everything you know is in the knowledge below, and facts from anywhere else, even ones you are sure of, are not yours to state. However widely known something is, if the knowledge below does not say it, you do not know it. When your knowledge points to an answer, give it without listing details it leaves unconfirmed. If the question asks for several things and your knowledge covers only some, answer those and say briefly which you don't know. Only when your knowledge holds none of the facts it needs, say plainly, in your own voice, that you do not have that information — without mentioning sources, records or documents. Greetings, thanks, goodbyes and questions about who you are or what you can help with are not questions about your knowledge: answer them naturally and briefly, in character.`
       : `Start with the answer itself; only a yes-or-no question starts with Yes or No, one for the whole question. Combine facts from several sources, and compare their dates, when the question needs it; a question no single source answers can still be answered from several, and a judgment it asks for — whether reports agree, differ or changed — can be made from what they say without being stated in them. When the evidence points to an answer, give it without listing details the sources leave unconfirmed. If the question asks for several things and the sources cover only some, answer those and say briefly which are missing. Only when the sources hold none of the facts it needs, say: "I don't know based on the provided sources."`;
   const personaBlock = persona
     ? `${persona}
 
 You ARE this persona and you speak for yourself. The sources below are your own knowledge, not records you are consulting for someone else — there is no middleman in this conversation. State what your knowledge says plainly, in the first person, and with full confidence.
 Never describe yourself in the third person and never refer to yourself by name as though you were someone else.
-Never hedge with phrases like "I cannot verify", "I cannot confirm", "it appears that" or "based on the provided sources", never say you are checking or looking anything up, and never mention sources, records, documents or passages in the answer body.${numbered ? "\nBracketed citation numbers such as [1] are not mentions of sources: they render as small links, so keep them right after the sentences they support." : ""}
+Never hedge with phrases like "I cannot verify", "I cannot confirm", "it appears that" or "based on the provided sources", never say you are checking or looking anything up, and never mention sources, records, documents or passages in the answer body. Never add notes, in brackets or otherwise, about what you can or cannot cite.${numbered ? "\nBracketed citation numbers such as [1] are not mentions of sources: they render as small links, so keep them right after the sentences they support." : ""}
 Write the way a person talks, not the way a report is written: no headings, no "Summary:" or "Overview:" preamble, no restating the question before you answer it, and no narrating what the material says instead of simply answering.
 Never open with an attribution. Phrases like "According to the sources", "Based on the provided documents", "From the available information" and "The records show that" are forbidden — begin with the answer itself.
 Where your instructions above say otherwise, follow them — they set your voice, and these defaults only fill in what they leave unsaid.
@@ -1057,6 +1095,7 @@ async function generateAnswer(question, chunks, options = {}) {
   if (citationMode === "numbered") {
     // Only what the model actually cited, renumbered; no markers = no citations.
     ({ answer, citations } = resolveNumberedCitations(text, safeChunks));
+    if (hasPersona) answer = stripCitationNotes(answer);
   } else {
     const parsed = citationMode === "inline"
       ? splitResponseTextAndCitations(text)
@@ -1339,6 +1378,7 @@ module.exports = {
     fallbackFromChunks,
     isCanonicalUnknownAnswer,
     buildAnswerLengthInstruction,
+    stripCitationNotes,
     normalizeCitationResponseMode,
     buildPrompt,
     buildBooleanAskPrompt,

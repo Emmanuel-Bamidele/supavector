@@ -8,7 +8,7 @@ const BULK_SIZE = 25;
 
 const GENERATION_UNAVAILABLE = "I couldn't generate a grounded answer right now because answer generation is unavailable.";
 
-function createSupavectorSystem({ baseUrl, token, collection, k = 10, answerK, provider, model, citationMode = "metadata", rerank = true }) {
+function createSupavectorSystem({ baseUrl, token, collection, k = 10, answerK, provider, model, reasoningEffort, grounding, answerLength, citationMode = "metadata", rerank = true }) {
   const headers = { authorization: `Bearer ${token}` };
   const url = (p) => `${baseUrl.replace(/\/$/, "")}${p}`;
   const unwrap = (payload) => (payload?.ok === true && "data" in payload ? payload.data : payload);
@@ -82,6 +82,10 @@ function createSupavectorSystem({ baseUrl, token, collection, k = 10, answerK, p
           citationMode,
           provider,
           model,
+          reasoningEffort,
+          // Absent means the gateway defaults: strict grounding, "auto" length.
+          grounding,
+          answerLength,
           // As the product sends them: the AI's voice, and the visitor's clock.
           persona: query.persona || undefined,
           background: query.persona ? `Current date and time (UTC): ${new Date().toUTCString()}.` : undefined

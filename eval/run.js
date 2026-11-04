@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadDataset } = require("./lib/datasets");
 const { mapLimit } = require("./lib/http");
-const { dedupeDocs, summarizeRetrieval, summarizeAnswers } = require("./lib/metrics");
+const { dedupeDocs, summarizeRetrieval, summarizeAnswers, summarizeLength } = require("./lib/metrics");
 const { createJudge } = require("./lib/judge");
 
 function parseArgs(argv) {
@@ -49,6 +49,9 @@ function buildSystem(name, args, dataset) {
       answerK: args["answer-k"] ? Number(args["answer-k"]) : undefined,
       provider: args.provider,
       model: args.model,
+      reasoningEffort: args["reasoning-effort"],
+      grounding: args.grounding === "extended" ? "extended" : undefined,
+      answerLength: args["answer-length"],
       citationMode: args["citation-mode"] || "metadata",
       rerank: String(args.rerank ?? "1") !== "0"
     });
@@ -84,12 +87,12 @@ function loadCheckpoint(file) {
   return new Map(rows.filter((r) => !r.error).map((r) => [r.id, r]));
 }
 
-async function runAnswers(system, queries, { concurrency, judge, checkpoint, log, docTexts = new Map() }) {
+async function runAnswers(system, queries, { concurrency, judge, checkpoint, log, docTexts = new Map(), judges = {} }) {
   const done = loadCheckpoint(checkpoint);
   if (done.size) log(`resuming: ${done.size} answers already graded in ${path.basename(checkpoint)}`);
   return mapLimit(queries, concurrency, async (q) => {
     if (done.has(q.id)) return done.get(q.id);
-    const row = await answerOne(system, q, judge, docTexts);
+    const row = await answerOne(system, q, judge, docTexts, judges);
     if (checkpoint) fs.appendFileSync(checkpoint, `${JSON.stringify(row)}\n`);
     return row;
   });
@@ -100,7 +103,8 @@ async function runAnswers(system, queries, { concurrency, judge, checkpoint, log
 // gold passage, or a labelled evidence document), and what share of the
 // documents it cites do?
 function scoreCitations(q, citations, docTexts) {
-  if (q.answer === undefined || /insufficient information/i.test(String(q.answer))) return { citationHit: null, citationPrecision: null };
+  // Behaviour questions (`expect`) are graded on what the reply does, not on a gold passage.
+  if (q.expect || q.answer === undefined || /insufficient information/i.test(String(q.answer))) return { citationHit: null, citationPrecision: null };
   const cited = [...new Set((citations || []).map((c) => c?.docId).filter(Boolean))];
   if (!cited.length) return { citationHit: false, citationPrecision: null };
   const holds = (docId) => (q.quote ? evidenceHit(q.quote, [{ text: docTexts.get(docId) || "" }]) : q.relevance.has(docId));
@@ -108,14 +112,32 @@ function scoreCitations(q, citations, docTexts) {
   return { citationHit: good > 0, citationPrecision: good / cited.length };
 }
 
-async function answerOne(system, q, judge, docTexts = new Map()) {
+// Sets built with --scope state per-scope expected behaviour (`expect`) for
+// questions whose right answer is a decline, a flag or a partial answer.
+const expectationFor = (q, scope) => (q.expect ? q.expect[scope] || null : null);
+const historyText = (history) => (history || []).map((t) => `${t.role}: ${t.text}`).join("\n");
+
+async function answerOne(system, q, judge, docTexts = new Map(), { behaviour, length, format, scope = "strict" } = {}) {
   const started = Date.now();
   let answer = { text: "", citations: [], contexts: [] };
   let error = null;
   try { answer = await system.answer(q); } catch (err) { error = String(err.message || err); }
   const latencyMs = Date.now() - started;
-  const grade = q.answer !== undefined && judge
-    ? await judge.grade({ question: q.text, reference: String(q.answer), candidate: answer.text }).catch((err) => ({ correct: false, reason: `judge error: ${err.message}` }))
+  const expected = expectationFor(q, scope);
+  const failed = (err) => ({ correct: false, reason: `judge error: ${err.message}` });
+  let grade = null;
+  if (expected && behaviour) {
+    grade = await behaviour.grade({ question: q.text, expected, reference: q.answer ? String(q.answer) : "", history: historyText(q.history), candidate: answer.text }).catch(failed);
+  } else if (q.answer !== undefined && judge) {
+    grade = await judge.grade({ question: q.text, reference: String(q.answer), candidate: answer.text }).catch(failed);
+  }
+  // Length only means something for a reply that answers: a decline is short
+  // by design. Unjudged (null) rather than guessed when the judge fails.
+  const lengthVerdict = length && q.shape && answer.text && !grade?.abstained
+    ? await length.grade({ question: q.text, candidate: answer.text }).catch(() => null)
+    : null;
+  const formatVerdict = format && answer.text && !grade?.abstained
+    ? await format.grade({ question: q.text, candidate: answer.text }).catch(() => null)
     : null;
   const relevant = [...q.relevance.keys()];
   const contextDocs = new Set((answer.contexts || []).map((c) => c.docId).filter(Boolean));
@@ -126,9 +148,16 @@ async function answerOne(system, q, judge, docTexts = new Map()) {
     reference: q.answer ?? null,
     answer: answer.text,
     retrievalQuery: answer.retrievalQuery || null,
+    shape: q.shape || null,
     correct: grade ? grade.correct : null,
     abstained: grade ? grade.abstained : null,
+    generalFlagged: grade && "generalFlagged" in grade ? grade.generalFlagged : null,
     judgeReason: grade ? grade.reason : null,
+    words: answer.text ? answer.text.replace(/\[\d+\]/g, "").split(/\s+/).filter(Boolean).length : 0,
+    lengthFit: lengthVerdict ? lengthVerdict.fit : null,
+    lengthReason: lengthVerdict ? lengthVerdict.reason : null,
+    formatFit: formatVerdict ? formatVerdict.fit : null,
+    formatReason: formatVerdict ? formatVerdict.reason : null,
     contextRecall: relevant.length ? relevant.filter((id) => contextDocs.has(id)).length / relevant.length : null,
     evidenceHit: q.quote ? evidenceHit(q.quote, answer.contexts) : null,
     citations: answer.citations,
@@ -167,6 +196,8 @@ async function main() {
   const types = args.types ? new Set(String(args.types).split(",")) : null;
   const queries = seededSample(dataset.queries.filter((q) => q.relevance.size || q.answer !== undefined), Number(args.limit || 0))
     .filter((q) => !types || types.has(q.type));
+  // --persona answers a public set the way the product does, in an AI's voice.
+  if (args.persona) for (const q of queries) q.persona = String(args.persona);
   log(`${dataset.name}: ${dataset.docs.length} docs, ${queries.length} queries (mode=${mode})`);
 
   const system = buildSystem(String(args.system || "supavector"), args, dataset);
@@ -191,9 +222,24 @@ async function main() {
     // "none" skips grading: context recall alone, e.g. with a cheap --model.
     const judge = args["judge-model"] === "none" ? null : createJudge({ model: args["judge-model"] });
     result.judgeModel = judge ? judge.model : "none";
+    const scope = args.grounding === "extended" ? "extended" : "strict";
+    const judges = {
+      scope,
+      behaviour: judge ? createJudge({ model: args["judge-model"], rubric: "behaviour" }) : null,
+      length: judge && args["length-judge"] ? createJudge({ model: args["judge-model"], rubric: "length" }) : null,
+      format: judge && args["format-judge"] ? createJudge({ model: args["judge-model"], rubric: "format" }) : null
+    };
+    result.grounding = scope;
+    result.answerLength = args["answer-length"] || "auto";
     const docTexts = new Map(dataset.docs.map((d) => [d.docId, d.text]));
-    const rows = await runAnswers(system, queries, { concurrency: Math.min(concurrency, 4), judge, checkpoint, log, docTexts });
+    const rows = await runAnswers(system, queries, { concurrency: Math.min(concurrency, 4), judge, checkpoint, log, docTexts, judges });
     result.answers = summarizeAnswers(rows);
+    if (judges.length) result.length = summarizeLength(rows);
+    if (judges.format) {
+      const judged = rows.filter((r) => r.formatFit);
+      const share = (fit) => (judged.length ? judged.filter((r) => r.formatFit === fit).length / judged.length : null);
+      result.format = { n: judged.length, right: share("right"), over: share("over"), under: share("under") };
+    }
     result.answerRows = rows;
   }
   result.finishedAt = new Date().toISOString();
