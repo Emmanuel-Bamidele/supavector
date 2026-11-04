@@ -414,6 +414,76 @@ Game Night Host and New Job Coach ask about the group or the job before
 answering, and Buy or Pass adds a not-financial-advice line. SupaVector 0.3
 ran without personas.
 
+## The Supavector app's default model (November 2026)
+
+In October 2026 the Supavector app switched its default answer model from
+`gpt-5.2` to `gpt-5-mini` at reasoning `lowest`. That setup had never been
+measured with the persona the app sends. These runs measure it, then a fix:
+reasoning `low` plus revised persona rules (strict knowledge scope, length,
+small talk, no notes about citations). Only the persona prompt changed. The
+API prompt without a persona is untouched, so the sections above still hold.
+
+MultiHop-RAG, the same 200 questions, 20 passages, numbered citations, with
+the persona "News Desk" in the wording the app's builder writes for a new AI.
+Judged by `gpt-4o`.
+
+| Question type | n | `gpt-5-mini`, `lowest`, old persona rules | `gpt-5-mini`, `low`, new persona rules |
+|---|---|---|---|
+| All | 200 | 76.0% | **81.5%** |
+| Unanswerable (must decline) | 23 | 34.8% | **100%** |
+| Comparison | 78 | 74.4% | 74.4% |
+| Inference | 57 | 98.2% | 94.7% |
+| Time order | 42 | 71.4% | 66.7% |
+| Median words per answer | | 67.5 | 64.5 |
+| Median answer time | | 4.0 s | 5.7 s |
+
+Paired over the 200 questions, the new setup is 5.5 points better (95%
+interval −1.0 to +12.5). Inference (−3.5, −10.5 to +3.5) and time order
+(−4.8, −21.4 to +9.5) are within run-to-run noise. Reading the changed
+answers: the three inference answers marked wrong name the right answer and
+then say one detail is missing. Three of the seven time-order answers marked
+wrong now say an article is missing, and in each of those the article had not
+reached the model (context recall below 1), so the old "Yes" was a guess.
+
+Model or prompt? On the 23 unanswerable questions alone, at reasoning
+`lowest`, `gpt-5-mini` declined 7 without a persona and `gpt-5.2` declined 23
+with one. The model was the cause.
+
+The seven product AIs, on a new internal set of 27 questions each
+(`supavector-one/scripts/build-eval-set.mjs --scope`). Counts are of the
+questions both runs answered; persona and tone as the app sends them:
+
+| Question type | n | Old | New |
+|---|---|---|---|
+| Single facts | 42 | 26 | 30 |
+| How or why | 26 | 13 | 19 |
+| Follow-ups | 21 | 15 | 17 |
+| Half covered (answer one part, decline the other) | 20 | 8 | 10 |
+| Not covered, on topic (decline) | 21 | 12 | 16 |
+| Off topic, widely known (decline) | 21 | 7 | 18 |
+| Small talk (reply in character) | 21 | 2 | 5 |
+
+On 15 further off-topic questions written after the rules (sports, code,
+translation, art, science), declines rose from 7 to 14. That run used the
+previous revision of the rules, which also had a sentence later removed for
+over-refusing time-order questions. The sentence aimed at off-topic
+questions is the same in both revisions.
+
+Limits of these runs: one judge (`gpt-4o`); one run per setup, where about
+10% of MultiHop answers flip between two runs of identical code. Small talk
+and many single facts are marked wrong because the AIs' tone tells them to
+ask the visitor questions first, the same before and after. The length judge
+marked most product-AI answers too long both before and after, which comes
+largely from those intake questions, so it isn't reported as a score.
+A third revision that let answers use lists, tables and bold when the
+content called for it was tried and dropped. On the same 200 MultiHop-RAG
+questions it scored 77.0% against 81.5% (paired −4.5 points, −9.0 to +0.5):
+answers to questions the knowledge does cover opened with "I don't have
+that" 23 times instead of 8. A formatting judge (`gpt-4o`) rated the
+formatting of the product AIs' answers right in 114 of 163 cases, against 116
+of 164 before, so it bought nothing for what it cost.
+Runs: [`eval/published/2026-11-04/product-default/`](eval/published/2026-11-04/product-default/).
+
 ## Limitations
 
 - **Two external systems so far:** OpenAI file search and Gemini File Search.
@@ -494,3 +564,4 @@ text; the ids join back to the public datasets.
 - `locomo/`: the LoCoMo runs, retrieval and full context.
 - `history/`: the earlier steps in "How we got here", numbered to match.
 - `ablations/`: the boost-scale sweep and the retrieval-leg comparison.
+- `../2026-11-04/product-default/`: the app's default answer model with its persona, before and after the November 2026 fix, and the two 23-question model-or-prompt checks.

@@ -138,6 +138,49 @@ function testAnswerLengthInstructionsAndTokenBudgets() {
   assert.equal(__testHooks.resolveCodeAnswerMaxTokens("short"), 2048);
   assert.equal(__testHooks.resolveCodeAnswerMaxTokens("medium"), 6144);
   assert.equal(__testHooks.resolveCodeAnswerMaxTokens("long"), 12288);
+  // A persona answers in chat: its "auto" drops the lean-long bias, and
+  // Brief/Detailed lean without padding. "medium" keeps the API wording.
+  const personaAuto = __testHooks.buildAnswerLengthInstruction("auto", { persona: true });
+  assert.match(personaAuto, /one fact, number, name or yes\/no gets a sentence or two/);
+  assert.doesNotMatch(personaAuto, /bias toward the longer response/i);
+  assert.match(__testHooks.buildAnswerLengthInstruction("short", { persona: true }), /At most two to four sentences/);
+  assert.match(__testHooks.buildAnswerLengthInstruction("long", { persona: true }), /still gets a short, direct answer/);
+  assert.match(__testHooks.buildAnswerLengthInstruction("medium", { persona: true }), /roughly 220-450 words/);
+}
+
+function testCitationNotesAreStrippedButLinksAndMarkersKept() {
+  const strip = __testHooks.stripCitationNotes;
+  assert.equal(strip("Paris is the capital.[No source in the provided documents states this fact.]"), "Paris is the capital.");
+  assert.equal(strip("It opens at nine [1] [source not provided in the documents you gave me]."), "It opens at nine [1].");
+  assert.equal(strip("Water weekly [1][2]."), "Water weekly [1][2].");
+  assert.equal(strip("See [the care guide](https://example.com/guide) for more."), "See [the care guide](https://example.com/guide) for more.");
+  assert.equal(strip("The wolf said [softly] goodnight."), "The wolf said [softly] goodnight.");
+}
+
+async function testGenerateAnswerStripsCitationNotesForPersonaOnly() {
+  const chunks = [{ chunk_id: "default::shop::hours#0", text: "The shop opens at nine." }];
+  const reply = { text: "We open at nine [1]. [I do not have a source for weekend hours.]", usage: null };
+  const persona = await generateAnswer("When do you open?", chunks, {
+    persona: "You are Ada, the shop's owner.",
+    citationMode: "numbered",
+    generateText: async () => reply
+  });
+  assert.equal(persona.answer, "We open at nine [1].");
+  // API callers without a persona get the model's text as before.
+  const api = await generateAnswer("When do you open?", chunks, { citationMode: "numbered", generateText: async () => reply });
+  assert.match(api.answer, /I do not have a source/);
+}
+
+function testPersonaStrictRuleRefusesOutsideFactsButAllowsSmallTalk() {
+  const prompt = __testHooks.buildPrompt("Who are you?", [
+    { chunk_id: "default::shop::hours#0", text: "The shop opens at nine." }
+  ], "auto", "numbered", { persona: "You are Ada, the shop's owner." });
+  assert.match(prompt, /However widely known something is, if the knowledge below does not say it, you do not know it/);
+  assert.match(prompt, /Ask the visitor something first only when you cannot answer well without it/);
+  assert.match(prompt, /Greetings, thanks, goodbyes and questions about who you are/);
+  assert.match(prompt, /Never add notes, in brackets or otherwise, about what you can or cannot cite/);
+  // The judgment rules that carry multi-document answers are untouched.
+  assert.match(prompt, /make a judgment the question asks for/);
 }
 
 function testFallbackSummaryIsNotCanonicalUnknownWhenChunksHaveText() {
@@ -506,6 +549,8 @@ function testAskPromptWithoutPersonaIsUnchanged() {
   assert.match(prompt, /You are an assistant answering questions using ONLY the sources below/);
   assert.match(prompt, /I don't know based on the provided sources\./);
   assert.doesNotMatch(prompt, /in the first person/);
+  // API answers stay plain text, as the published benchmarks measured them.
+  assert.match(prompt, /Answer text only \(no bullet labels, no markdown headings\)/);
 }
 
 async function testGenerateAnswerUnknownStaysInVoiceForPersona() {
@@ -555,6 +600,9 @@ async function main() {
   await testGenerateAnswerExtendedGroundingStillAnswersWithNoChunks();
   testBooleanAskPromptRemainsSingleStringPrompt();
   testAnswerLengthInstructionsAndTokenBudgets();
+  testCitationNotesAreStrippedButLinksAndMarkersKept();
+  await testGenerateAnswerStripsCitationNotesForPersonaOnly();
+  testPersonaStrictRuleRefusesOutsideFactsButAllowsSmallTalk();
   testFallbackSummaryIsNotCanonicalUnknownWhenChunksHaveText();
   testFallbackSummaryPrefersSentenceThatMatchesQuestionTerms();
   testFallbackSummaryReturnsCanonicalUnknownWhenQuestionDoesNotMatchSources();
