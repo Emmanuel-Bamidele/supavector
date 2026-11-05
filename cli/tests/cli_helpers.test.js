@@ -331,16 +331,16 @@ function testBaseUrlHelpers() {
 function testModelHelpers() {
   assert.equal(DEFAULT_ANSWER_MODEL, "gpt-5.2");
   assert.equal(DEFAULT_EMBED_MODEL, "text-embedding-3-large");
-  assert.equal(DEFAULT_REFLECT_MODEL, "gpt-5-mini");
+  assert.equal(DEFAULT_REFLECT_MODEL, "gpt-6-luna");
   assert.equal(GENERATION_MODEL_PRESETS.length, 4);
   assert.equal(normalizeConfiguredModel("", "gpt-5.2"), "gpt-5.2");
   assert.equal(normalizeConfiguredModel(" gpt-5-mini ", "gpt-5.2"), "gpt-5-mini");
   assert.equal(defaultOnboardAnswerModelSelection("gpt-5.2"), "1");
-  assert.equal(defaultOnboardAnswerModelSelection("gpt-5-mini"), "2");
-  assert.equal(defaultOnboardAnswerModelSelection("gpt-5-nano"), "3");
+  assert.equal(defaultOnboardAnswerModelSelection("gpt-6-luna"), "2");
+  assert.equal(defaultOnboardAnswerModelSelection("gpt-5.6-luna"), "3");
   assert.equal(normalizeOnboardAnswerModelSelection("1"), "gpt-5.2");
-  assert.equal(normalizeOnboardAnswerModelSelection("2"), "gpt-5-mini");
-  assert.equal(normalizeOnboardAnswerModelSelection("3"), "gpt-5-nano");
+  assert.equal(normalizeOnboardAnswerModelSelection("2"), "gpt-6-luna");
+  assert.equal(normalizeOnboardAnswerModelSelection("3"), "gpt-5.6-luna");
   assert.equal(normalizeOnboardAnswerModelSelection("gpt-5.2"), "gpt-5.2");
   assert.throws(() => normalizeOnboardAnswerModelSelection("4"), /Custom model id is required/);
 }

@@ -6,7 +6,8 @@ const DEFAULT_REFLECT_PROVIDER = "openai";
 
 const DEFAULT_ANSWER_MODEL = "gpt-5.2";
 const DEFAULT_EMBED_MODEL = "text-embedding-3-large";
-const DEFAULT_REFLECT_MODEL = "gpt-5-mini";
+// gpt-5-mini and gpt-5-nano shut down on 2026-12-11 (OpenAI deprecations).
+const DEFAULT_REFLECT_MODEL = "gpt-6-luna";
 
 const DEFAULT_GENERATION_MODEL_BY_PROVIDER = Object.freeze({
   openai: DEFAULT_ANSWER_MODEL,
@@ -69,15 +70,15 @@ const OPENAI_GENERATION_MODEL_PRESETS = Object.freeze([
   }),
   Object.freeze({
     key: "2",
-    model: "gpt-5-mini",
+    model: "gpt-6-luna",
     label: "Fast lower-cost default",
-    family: "gpt-5",
+    family: "gpt-6",
     supportsTemperature: false
   }),
   Object.freeze({
     key: "3",
-    model: "gpt-5-nano",
-    label: "Smallest lowest-cost GPT-5",
+    model: "gpt-5.6-luna",
+    label: "Low-cost GPT-5.6",
     family: "gpt-5",
     supportsTemperature: false
   }),
@@ -343,9 +344,22 @@ function normalizeGenerationModelSelection(value, fallback = DEFAULT_ANSWER_MODE
   return normalizeGenerationModelSelectionForProvider(DEFAULT_ANSWER_PROVIDER, value, fallback);
 }
 
+// OpenAI's reasoning models: the o-series, and GPT-5 onward (gpt-5, gpt-5.6,
+// gpt-6, ...). gpt-4o and gpt-4.1 are not.
+function openAiModelFamily(modelId) {
+  const id = String(normalizeModelId(modelId) || "").trim().toLowerCase();
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(id);
+  return {
+    id,
+    major: gpt ? Number(gpt[1]) : null,
+    minor: gpt && gpt[2] ? Number(gpt[2]) : 0,
+    oSeries: /^o\d/.test(id)
+  };
+}
+
 function isReasoningStyleModel(modelId) {
-  const clean = String(normalizeModelId(modelId) || "").toLowerCase();
-  return /^o\d/.test(clean) || /^gpt-5/i.test(clean);
+  const { major, oSeries } = openAiModelFamily(modelId);
+  return oSeries || (major !== null && major >= 5);
 }
 
 function supportsTemperature(modelId, provider = DEFAULT_ANSWER_PROVIDER) {
@@ -427,11 +441,13 @@ function buildPublicModelCatalog() {
 }
 
 /*
- * Reasoning effort for OpenAI reasoning models (gpt-5 family, o-series).
- * Unset means the API default, which differs by model: none for gpt-5.1 and
- * later, medium for gpt-5 / gpt-5-mini / gpt-5-nano. "lowest" asks for the
- * cheapest, fastest setting each family accepts, so a caller can say "no
- * hidden reasoning" without knowing which spelling the model takes.
+ * Reasoning effort for OpenAI reasoning models (o-series, GPT-5 onward).
+ * Unset means the API default, which differs by model: none for gpt-5.1 to
+ * gpt-5.6, medium for gpt-5 / gpt-5-mini / gpt-5-nano and for GPT-6. "lowest"
+ * asks for the cheapest, fastest setting each family accepts, so a caller can
+ * say "no hidden reasoning" without knowing which spelling the model takes.
+ * GPT-6 takes none|low|medium|high|xhigh|max, and only Luna is documented to
+ * accept none (Astra and 6.1 Sol refuse it), so its other tiers get low.
  */
 const REASONING_EFFORTS = new Set(["lowest", "none", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -444,14 +460,19 @@ function normalizeReasoningEffort(value) {
 function openAiReasoningParam(model, effort) {
   const requested = normalizeReasoningEffort(effort);
   if (!requested) return null;
-  const id = String(model || "").trim().toLowerCase();
+  const { id, major, minor, oSeries } = openAiModelFamily(model);
   if (id.includes("-chat")) return null; // chat snapshots take no reasoning param
-  const gpt5 = /^gpt-5(?:\.(\d+))?(?:-|$)/.exec(id);
-  const oSeries = /^o\d/.test(id);
-  if (!gpt5 && !oSeries) return null; // not a reasoning model
+  if (!oSeries && !(major !== null && major >= 5)) return null; // not a reasoning model
+  if (major !== null && major >= 6) {
+    // GPT-6 has no "minimal", and "none" is Luna-only.
+    if (requested === "lowest" || requested === "minimal" || requested === "none") {
+      return { effort: /luna/.test(id) ? "none" : "low" };
+    }
+    return { effort: requested };
+  }
   if (requested !== "lowest") return { effort: requested };
   if (oSeries) return { effort: "low" };
-  return { effort: gpt5[1] && Number(gpt5[1]) >= 1 ? "none" : "minimal" };
+  return { effort: minor >= 1 ? "none" : "minimal" };
 }
 
 module.exports = {

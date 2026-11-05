@@ -10,7 +10,7 @@ const { generateProviderText } = require("./provider_clients");
 
 const REWRITE_ENABLED = process.env.QUERY_REWRITE_ENABLED !== "0";
 const REWRITE_PROVIDER = String(process.env.QUERY_REWRITE_PROVIDER || "openai").trim().toLowerCase();
-const REWRITE_MODEL = String(process.env.QUERY_REWRITE_MODEL || "gpt-4.1-mini").trim();
+const REWRITE_MODEL = String(process.env.QUERY_REWRITE_MODEL || "gpt-6-luna").trim();
 const REWRITE_TIMEOUT_MS = parseInt(process.env.QUERY_REWRITE_TIMEOUT_MS || "6000", 10);
 const MAX_HISTORY_TURNS = 6;
 
@@ -58,6 +58,8 @@ async function rewriteQueryForRetrieval({ question, history, answerProvider, ans
         user: `Conversation:\n${conversation}\n\nLatest message: ${cleanQuestion}\n\nStandalone search query:`
       },
       temperature: 0,
+      // No hidden reasoning: these small output caps leave none to spare.
+      reasoningEffort: "lowest",
       maxTokens: 120,
       maxRetries: 0,
       signal: controller.signal
@@ -111,6 +113,8 @@ async function planRetrieval({ question, history, answerProvider, answerApiKey }
         user: `${conversation ? `Conversation:\n${conversation}\n\n` : ""}Latest message: ${cleanQuestion}`
       },
       temperature: 0,
+      // No hidden reasoning: these small output caps leave none to spare.
+      reasoningEffort: "lowest",
       jsonMode: true,
       maxTokens: 260,
       maxRetries: 0,
@@ -164,6 +168,8 @@ async function planFollowupSearches({ question, parts, found, answerProvider, an
         user: `Question: ${String(question || "").trim()}\nParts: ${JSON.stringify(parts)}\nDocuments found:\n${listed}`
       },
       temperature: 0,
+      // No hidden reasoning: these small output caps leave none to spare.
+      reasoningEffort: "lowest",
       jsonMode: true,
       maxTokens: 200,
       maxRetries: 0,
