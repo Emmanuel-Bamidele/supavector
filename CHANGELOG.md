@@ -15,6 +15,8 @@ from 18.4 s to 4.2 s; with `k: 20` it reaches 82.0%. Full results:
 
 ### Fixed
 
+- GPT-6 models are treated as reasoning models: no `temperature`, and `reasoningEffort` reaches them. "lowest" (and "minimal" or "none", which GPT-6 lacks or limits to Luna) becomes `none` on Luna and `low` on its other tiers.
+- Models OpenAI retires move to `gpt-6-luna`: query rewrite, the listwise reranker and chunk context (`gpt-4.1-mini`, shut down 2027-01-14), and the reflection and compaction defaults (`gpt-5-mini` and `gpt-5-nano`, shut down 2026-12-11). Rewrite, rerank and chunk context ask for the lowest reasoning effort, so they keep the no-hidden-reasoning behaviour of the model they ran on. The OpenAI catalog shortcuts become `2 = gpt-6-luna`, `3 = gpt-5.6-luna`. Installs that pin these models in `.env` keep them until they change it.
 - Document search no longer samples: every document in scope is searched. HOT/WARM/COLD tiering now applies to memories only; for documents it searched about 8 random documents per query and let unused ones decay out of reach (`DOCUMENT_RETRIEVAL_FULL_SCOPE=0` restores the old behaviour).
 - Keyword search matches natural questions: BM25 over a stemmed English index with OR semantics replaces the AND-of-every-word query (`LEXICAL_MODE=legacy` restores it).
 - Hybrid fusion boosts are scaled to RRF's magnitude (`HYBRID_RRF_BOOST_SCALE`); unscaled, word-overlap boosts outweighed both rankers on semantic queries. The reranker's pool keeps slots for the best keyword matches outside the fused head (`RERANK_LEXICAL_SLOTS`), so exact-term evidence still reaches it.

@@ -142,7 +142,7 @@ await client.updateTenantSettings({
     booleanAskProvider: null,
     booleanAskModel: null,
     reflectProvider: "openai",
-    reflectModel: "gpt-5-mini",
+    reflectModel: "gpt-6-luna",
     compactProvider: null,
     compactModel: null
   }

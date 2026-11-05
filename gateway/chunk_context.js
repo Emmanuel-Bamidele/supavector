@@ -14,7 +14,7 @@ const { generateProviderText } = require("./provider_clients");
 
 const ENABLED = process.env.CHUNK_CONTEXT_ENABLED !== "0";
 const PROVIDER = String(process.env.CHUNK_CONTEXT_PROVIDER || "openai").trim().toLowerCase();
-const MODEL = String(process.env.CHUNK_CONTEXT_MODEL || "gpt-4.1-mini").trim();
+const MODEL = String(process.env.CHUNK_CONTEXT_MODEL || "gpt-6-luna").trim();
 const FULL_DOC_CHARS = parseInt(process.env.CHUNK_CONTEXT_FULL_DOC_CHARS || "60000", 10);
 const BATCH_SIZE = parseInt(process.env.CHUNK_CONTEXT_BATCH || "10", 10);
 const CONCURRENCY = parseInt(process.env.CHUNK_CONTEXT_CONCURRENCY || "4", 10);
@@ -77,6 +77,8 @@ async function generate(system, user, maxTokens) {
       model: MODEL,
       input: { system, user },
       temperature: 0,
+      // No hidden reasoning: contexts are short and ingest runs per chunk batch.
+      reasoningEffort: "lowest",
       jsonMode: system === CONTEXT_INSTRUCTIONS,
       maxTokens,
       maxRetries: 1,

@@ -166,7 +166,7 @@ function testAnswerModelResolvers() {
 }
 
 function testResponsesCompatibility() {
-  for (const model of ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "gpt-5.1"]) {
+  for (const model of ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-6-luna", "gpt-6-sol"]) {
     const params = buildResponsesCreateParams({
       provider: "openai",
       model,

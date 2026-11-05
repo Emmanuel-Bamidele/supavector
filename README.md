@@ -316,7 +316,7 @@ supavector changemodel \
   --embed-provider openai \
   --embed-model text-embedding-3-large \
   --reflect-provider openai \
-  --reflect-model gpt-5-mini \
+  --reflect-model gpt-6-luna \
   --compact-model inherit \
   --restart
 ```
@@ -327,7 +327,7 @@ Provider picker choices are:
 - generation providers: `1 = openai`, `2 = gemini`, `3 = anthropic`
 - embedding providers: `1 = openai`, `2 = gemini`
 
-When the provider is OpenAI, `supavector ask --model ...` and `supavector boolean_ask --model ...` use the current OpenAI catalog shortcuts (`1 = gpt-5.2`, `2 = gpt-5-mini`, `3 = gpt-5-nano`, `4 = custom`). When you also pass `--provider`, the same numbering becomes provider-specific for that provider's catalog. Explicit model ids still work anywhere.
+When the provider is OpenAI, `supavector ask --model ...` and `supavector boolean_ask --model ...` use the current OpenAI catalog shortcuts (`1 = gpt-5.2`, `2 = gpt-6-luna`, `3 = gpt-5.6-luna`, `4 = custom`). When you also pass `--provider`, the same numbering becomes provider-specific for that provider's catalog. Explicit model ids still work anywhere.
 
 Model env keys for self-hosted installs:
 
@@ -342,9 +342,9 @@ BOOLEAN_ASK_MODEL=
 EMBED_PROVIDER=openai
 EMBED_MODEL=text-embedding-3-large
 REFLECT_PROVIDER=openai
-REFLECT_MODEL=gpt-5-mini
+REFLECT_MODEL=gpt-6-luna
 COMPACT_PROVIDER=
-COMPACT_MODEL=gpt-5-nano
+COMPACT_MODEL=gpt-6-luna
 ```
 
 `ANSWER_PROVIDER`, `BOOLEAN_ASK_PROVIDER`, `REFLECT_PROVIDER`, and `COMPACT_PROVIDER` can be `openai`, `gemini`, or `anthropic`. `EMBED_PROVIDER` can be `openai` or `gemini`. Anthropic is generation-only today because SupaVector still needs a provider-native embedding endpoint for indexing and retrieval.

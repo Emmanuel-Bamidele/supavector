@@ -18,7 +18,7 @@ const MODELS = {
   cohere: process.env.RERANK_MODEL || "rerank-v3.5",
   voyage: process.env.RERANK_MODEL || "rerank-2.5",
   jina: process.env.RERANK_MODEL || "jina-reranker-v2-base-multilingual",
-  openai: process.env.RERANK_MODEL || "gpt-4.1-mini"
+  openai: process.env.RERANK_MODEL || "gpt-6-luna"
 };
 const ENDPOINTS = {
   cohere: { url: "https://api.cohere.com/v2/rerank", key: () => process.env.COHERE_API_KEY },
@@ -63,6 +63,8 @@ async function listwiseScores(query, texts, signal) {
     model: MODELS.openai,
     input: { system: LISTWISE_INSTRUCTIONS, user: `Query: ${query}\n\nPassages:\n${passages}` },
     temperature: 0,
+    // No hidden reasoning: the output cap is sized for the ranking alone.
+    reasoningEffort: "lowest",
     jsonMode: true,
     maxTokens: 20 + texts.length * 6,
     maxRetries: 0,

@@ -650,7 +650,7 @@ function testProviderClientHooks() {
 }
 
 function testOpenAiRequestBuilderOmitsUnsupportedTemperature() {
-  for (const model of ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-codex"]) {
+  for (const model of ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-codex", "gpt-5.6-luna", "gpt-6-luna", "gpt-6-sol"]) {
     const body = __testHooks.buildOpenAiTextRequestBody({
       model,
       input: { system: "Follow the repo sources.", user: "Explain the auth flow." },
@@ -691,6 +691,17 @@ function testOpenAiReasoningEffort() {
   assert.equal(body("gpt-4.1-mini", "lowest").reasoning, undefined);
   assert.equal(body("gpt-5-chat-latest", "lowest").reasoning, undefined);
   assert.equal(body("gpt-5-mini", "bogus").reasoning, undefined);
+  // GPT-6: no "minimal", and "none" only on Luna; the old models never get one.
+  assert.deepEqual(body("gpt-6-luna", "lowest").reasoning, { effort: "none" });
+  assert.deepEqual(body("gpt-6-luna", "minimal").reasoning, { effort: "none" });
+  assert.deepEqual(body("gpt-6-luna", "low").reasoning, { effort: "low" });
+  assert.deepEqual(body("gpt-6-sol", "lowest").reasoning, { effort: "low" });
+  assert.deepEqual(body("gpt-6-sol", "none").reasoning, { effort: "low" });
+  assert.deepEqual(body("gpt-6-sol", "high").reasoning, { effort: "high" });
+  assert.deepEqual(body("gpt-5.6-luna", "lowest").reasoning, { effort: "none" });
+  assert.equal(body("gpt-6-luna", undefined).reasoning, undefined);
+  assert.equal(body("gpt-4o-mini", "lowest").reasoning, undefined);
+  assert.equal(body("gpt-4o", "low").reasoning, undefined);
 }
 
 async function main() {
